@@ -1,0 +1,32 @@
+## Interface: 30300
+## Title: PBAltManager
+## Notes: Beautiful alt/manager UI for playerbot management — inventory, professions, trainer, equipment.
+## Author: PBAltManager
+## Version: 0.1.0
+## SavedVariables: PBAMConfig
+## SavedVariablesPerCharacter: PBAMMinimapDB
+
+# Libraries
+Libs\LibStub.lua
+Libs\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0.lua
+
+# Core (plain CreateFrame UI)
+PBAM_Bridge.lua
+PBAM_Theme.lua
+PBAM_Helpers.lua
+PBAM_TalentData.lua
+PBAltManager.lua
+
+# Minimap button
+PBAM_Minimap.lua
+
+# Tabs
+PBAM_Tab_Roster.lua
+PBAM_Tab_Inventory.lua
+PBAM_Tab_Professions.lua
+PBAM_Tab_Spells.lua
+PBAM_Tab_Talents.lua
+PBAM_Tab_Trainer.lua
+PBAM_Tab_Equipment.lua
