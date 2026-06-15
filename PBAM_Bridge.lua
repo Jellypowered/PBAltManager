@@ -476,27 +476,32 @@ function Bridge.ApplyInventoryPayload(payload)
 
     if opcode == "INV_BEGIN" then
         Bridge.Inventory[key] = { name = name, token = token, items = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
-    elseif opcode == "INV_SUMMARY" then
+        return
+    end
+
+    local inv = Bridge.Inventory[key]
+    if not inv or inv.token ~= token then
+        Bridge.DebugPrint("[INV DEBUG] Ignoring stale inventory chunk opcode=" .. tostring(opcode) .. " bot=" .. tostring(name) .. " token=" .. tostring(token) .. " current=" .. tostring(inv and inv.token or "nil"))
+        return
+    end
+
+    if opcode == "INV_SUMMARY" then
         local gold, rest2 = splitOnce(rest, "~")
         local silver, rest3 = splitOnce(rest2, "~")
         local copper, rest4 = splitOnce(rest3, "~")
         local bagUsed, bagTotal = splitOnce(rest4, "~")
-        local inv = Bridge.Inventory[key] or { name = name, items = {} }
-        inv.token = token
         inv.goldCopper = (tonumber(gold) or 0) * 10000 + (tonumber(silver) or 0) * 100 + (tonumber(copper) or 0)
         inv.bagUsed = tonumber(bagUsed) or 0
         inv.bagTotal = tonumber(bagTotal) or 0
         Bridge.Inventory[key] = inv
     elseif opcode == "INV_ITEM" then
         local itemText = trim(urlDecode(rest))
-        local inv = Bridge.Inventory[key] or { name = name, items = {} }
         inv.items = inv.items or {}
         if itemText ~= "" then
             table.insert(inv.items, { text = itemText, itemId = parseItemLinkId(itemText) })
         end
         Bridge.Inventory[key] = inv
     elseif opcode == "INV_END" then
-        local inv = Bridge.Inventory[key] or { name = name, items = {} }
         inv.loading = false
         Bridge.Inventory[key] = inv
         Bridge.FireCallback("InventoryUpdated", name, inv)
@@ -507,28 +512,34 @@ function Bridge.ApplyBankPayload(payload)
     local opcode, name, token, rest = parseOpcodePayload(payload)
     if name == "" then return end
     local key = string.lower(name)
+
     if opcode == "BANK_BEGIN" or opcode == "BANK" then
         Bridge.Bank[key] = { name = name, token = token, items = {}, loading = true }
-    elseif opcode == "BANK_SUMMARY" then
+        return
+    end
+
+    local bank = Bridge.Bank[key]
+    if not bank or bank.token ~= token then
+        Bridge.DebugPrint("[BANK DEBUG] Ignoring stale bank chunk opcode=" .. tostring(opcode) .. " bot=" .. tostring(name) .. " token=" .. tostring(token) .. " current=" .. tostring(bank and bank.token or "nil"))
+        return
+    end
+
+    if opcode == "BANK_SUMMARY" then
         local numSlots, goldCopper = splitOnce(rest, "~")
-        local bank = Bridge.Bank[key] or { name = name, items = {} }
         bank.numSlots = tonumber(numSlots) or 0
         bank.goldCopper = tonumber(goldCopper) or 0
         Bridge.Bank[key] = bank
         local inv = Bridge.Inventory[key]
         if inv then inv.bankGoldCopper = bank.goldCopper end
     elseif opcode == "BANK_ITEM" then
-        local bank = Bridge.Bank[key] or { name = name, items = {} }
         bank.items = bank.items or {}
         local itemText = trim(urlDecode(rest))
         if itemText ~= "" then table.insert(bank.items, { text = itemText, itemId = parseItemLinkId(itemText) }) end
         Bridge.Bank[key] = bank
     elseif opcode == "BANK_ERROR" then
-        local bank = Bridge.Bank[key] or { name = name, items = {} }
         bank.error = trim(urlDecode(rest))
         Bridge.Bank[key] = bank
     elseif opcode == "BANK_END" then
-        local bank = Bridge.Bank[key] or { name = name, items = {} }
         bank.loading = false
         Bridge.Bank[key] = bank
         Bridge.FireCallback("BankUpdated", name, bank)
@@ -576,10 +587,18 @@ function Bridge.ApplyTalentSpecPayload(payload)
 
     if opcode == "TALENT_SPEC_BEGIN" then
         Bridge.TalentSpecs[key] = { name = name, token = token, specs = {}, loading = true }
-    elseif opcode == "TALENT_SPEC_ITEM" then
+        return
+    end
+
+    local specs = Bridge.TalentSpecs[key]
+    if not specs or specs.token ~= token then
+        Bridge.DebugPrint("[TALENT DEBUG] Ignoring stale talent chunk opcode=" .. tostring(opcode) .. " bot=" .. tostring(name) .. " token=" .. tostring(token) .. " current=" .. tostring(specs and specs.token or "nil"))
+        return
+    end
+
+    if opcode == "TALENT_SPEC_ITEM" then
         local index, rest2 = splitOnce(rest, "~")
         local specName, build = splitOnce(rest2, "~")
-        local specs = Bridge.TalentSpecs[key] or { name = name, token = token, specs = {} }
         table.insert(specs.specs, {
             index = tonumber(index) or 0,
             name = trim(urlDecode(specName)),
@@ -587,7 +606,6 @@ function Bridge.ApplyTalentSpecPayload(payload)
         })
         Bridge.TalentSpecs[key] = specs
     elseif opcode == "TALENT_SPEC_END" then
-        local specs = Bridge.TalentSpecs[key] or { name = name, token = token, specs = {} }
         specs.loading = false
         Bridge.TalentSpecs[key] = specs
         Bridge.FireCallback("TalentSpecsUpdated", name, specs.specs)
@@ -603,8 +621,16 @@ function Bridge.ApplySpellbookPayload(payload)
 
     if opcode == "SB_BEGIN" or opcode == "SPELLBOOK_BEGIN" then
         Bridge.Spellbook[key] = { name = name, token = token, spells = {}, loading = true }
-    elseif opcode == "SB_ITEM" then
-        local sb = Bridge.Spellbook[key] or { name = name, token = token, spells = {} }
+        return
+    end
+
+    local sb = Bridge.Spellbook[key]
+    if not sb or sb.token ~= token then
+        Bridge.DebugPrint("[SPELLBOOK DEBUG] Ignoring stale spellbook chunk opcode=" .. tostring(opcode) .. " bot=" .. tostring(name) .. " token=" .. tostring(token) .. " current=" .. tostring(sb and sb.token or "nil"))
+        return
+    end
+
+    if opcode == "SB_ITEM" then
         local spellId = tonumber(rest) or 0
         table.insert(sb.spells, { spellId = spellId, name = GetSpellInfo and GetSpellInfo(spellId) or nil })
         Bridge.Spellbook[key] = sb
@@ -613,7 +639,6 @@ function Bridge.ApplySpellbookPayload(payload)
         local spellName, rest3 = splitOnce(rest2, "~")
         local rank, rest4 = splitOnce(rest3, "~")
         local cooldown, spellLevel = splitOnce(rest4, "~")
-        local sb = Bridge.Spellbook[key] or { name = name, token = token, spells = {} }
         table.insert(sb.spells, {
             spellId = tonumber(spellId) or 0,
             name = trim(urlDecode(spellName)),
@@ -623,7 +648,6 @@ function Bridge.ApplySpellbookPayload(payload)
         })
         Bridge.Spellbook[key] = sb
     elseif opcode == "SB_END" or opcode == "SPELLBOOK_END" then
-        local sb = Bridge.Spellbook[key] or { name = name, token = token, spells = {} }
         sb.loading = false
         Bridge.Spellbook[key] = sb
         Bridge.FireCallback("SpellbookUpdated", name, sb)
@@ -634,9 +658,19 @@ function Bridge.ApplyBotSkillsPayload(payload)
     local opcode, name, token, rest = parseOpcodePayload(payload)
     if name == "" then return end
     local key = string.lower(name)
+
     if opcode == "BOT_SKILLS_BEGIN" or opcode == "BOT_SKILLS" then
         Bridge.Professions[key] = { name = name, token = token, skills = {}, primary = {}, secondary = {}, other = {}, loading = true }
-    elseif opcode == "BOT_SKILLS_ITEM" then
+        return
+    end
+
+    local skills = Bridge.Professions[key]
+    if not skills or skills.token ~= token then
+        Bridge.DebugPrint("[SKILLS DEBUG] Ignoring stale skills chunk opcode=" .. tostring(opcode) .. " bot=" .. tostring(name) .. " token=" .. tostring(token) .. " current=" .. tostring(skills and skills.token or "nil"))
+        return
+    end
+
+    if opcode == "BOT_SKILLS_ITEM" then
         local category, rest2 = splitOnce(rest, "~")
         local skillId, rest3 = splitOnce(rest2, "~")
         local skillKey, rest4 = splitOnce(rest3, "~")
@@ -660,7 +694,6 @@ function Bridge.ApplyBotSkillsPayload(payload)
         end
         Bridge.Professions[key] = skills
     elseif opcode == "BOT_SKILLS_END" then
-        local skills = Bridge.Professions[key] or { name = name, skills = {}, primary = {}, secondary = {}, other = {} }
         skills.loading = false
         Bridge.Professions[key] = skills
         Bridge.FireCallback("BotSkillsUpdated", name, skills)
@@ -734,60 +767,64 @@ function Bridge.ApplyProfessionPayload(payload)
 end
 
 function Bridge.ApplyBotReputationsPayload(payload)
-    -- BOT_REPUTATIONS_BEGIN~BotName~SessionID
-    -- BOT_REPUTATION_ITEM~BotName~SessionID~FactionId~Faction~Standing~Value~Max
-    -- BOT_REPUTATIONS_END~BotName~SessionID
-
+    -- BOT_REPUTATIONS~BotName~Token or BOT_REPUTATION_ITEM~BotName~Token~...
     local parts = {}
     for s in string.gmatch(payload or "", "[^~]+") do table.insert(parts, s) end
 
     if #parts < 2 then return end
 
-    local opcode, name
+    local opcode, name, token
     if tostring(parts[1]):find("^BOT_REPUT") then
         opcode = parts[1]
         name = trim(urlDecode(parts[2]))
-        table.remove(parts, 1)
+        token = parts[3]
     else
         name = trim(urlDecode(parts[1]))
         opcode = parts[2]
+        token = parts[3]
     end
     if name == "" then return end
-    local fieldOffset = (parts[2] == opcode) and 1 or 0
+
+    local key = string.lower(name)
+
     if opcode == "BOT_REPUTATIONS_BEGIN" then
-        local reps = { name = name, reputations = {} }
         Bridge.BotReputations = Bridge.BotReputations or {}
-        Bridge.BotReputations[string.lower(name)] = reps
-    elseif (opcode == "BOT_REPUTATION" or opcode == "BOT_REPUTATION_ITEM") and #parts >= 6 then
-        local reps = Bridge.BotReputations and Bridge.BotReputations[string.lower(name)] or { name = name, reputations = {} }
+        Bridge.BotReputations[key] = { name = name, token = token, reputations = {} }
+        return
+    end
+
+    local reps = Bridge.BotReputations and Bridge.BotReputations[key]
+    if not reps or reps.token ~= token then
+        Bridge.DebugPrint("[REP DEBUG] Ignoring stale rep chunk opcode=" .. tostring(opcode) .. " bot=" .. tostring(name) .. " token=" .. tostring(token) .. " current=" .. tostring(reps and reps.token or "nil"))
+        return
+    end
+
+    if (opcode == "BOT_REPUTATION" or opcode == "BOT_REPUTATION_ITEM") and #parts >= 4 then
         if opcode == "BOT_REPUTATION_ITEM" then
-            local factionId = tonumber(parts[3 + fieldOffset]) or 0
-            local factionName = trim(urlDecode(parts[4 + fieldOffset]))
+            local factionId = tonumber(parts[4]) or 0
+            local factionName = trim(urlDecode(parts[5]))
             reps.reputations[factionName ~= "" and factionName or tostring(factionId)] = {
                 factionId = factionId,
-                standing = tonumber(parts[5 + fieldOffset]) or 0,
-                value = tonumber(parts[6 + fieldOffset]) or 0,
-                max = tonumber(parts[7 + fieldOffset]) or 0,
+                standing = tonumber(parts[6]) or 0,
+                value = tonumber(parts[7]) or 0,
+                max = tonumber(parts[8]) or 0,
             }
         else
-            reps.reputations[trim(parts[2 + fieldOffset])] = {
-                standing = tonumber(parts[3 + fieldOffset]) or 0,
-                value = tonumber(parts[4 + fieldOffset]) or 0,
-                max = tonumber(parts[5 + fieldOffset]) or 0,
+            reps.reputations[trim(parts[4])] = {
+                standing = tonumber(parts[5]) or 0,
+                value = tonumber(parts[6]) or 0,
+                max = tonumber(parts[7]) or 0,
             }
         end
-        Bridge.BotReputations[string.lower(name)] = reps
+        Bridge.BotReputations[key] = reps
     elseif opcode == "BOT_REPUTATIONS_END" then
-        Bridge.FireCallback("BotReputationsUpdated", name, Bridge.BotReputations and Bridge.BotReputations[string.lower(name)])
+        Bridge.BotReputations[key] = reps
+        Bridge.FireCallback("BotReputationsUpdated", name, reps)
     end
 end
 
 function Bridge.ApplyBotEmblemsPayload(payload)
-    -- BOT_EMBLEMS_BEGIN~BotName~SessionID
-    -- BOT_EMBLEM~BotName~SessionID~EmblemId~Count
-    -- BOT_EMBLEMS_END~BotName~SessionID
-    -- BOT_EMBLEMS_MONEY~BotName~SessionID~Copper
-
+    -- BOT_EMBLEMS~BotName~Token or BOT_EMBLEM~BotName~Token~...
     local parts = {}
     for s in string.gmatch(payload or "", "[^~]+") do table.insert(parts, s) end
 
@@ -797,20 +834,30 @@ function Bridge.ApplyBotEmblemsPayload(payload)
     if name == "" then return end
 
     local opcode = parts[2]
+    local token = parts[3]
+    local key = string.lower(name)
+
     if opcode == "BOT_EMBLEMS_BEGIN" then
-        local emblems = { name = name, emblems = {}, money = 0 }
         Bridge.BotEmblems = Bridge.BotEmblems or {}
-        Bridge.BotEmblems[string.lower(name)] = emblems
-    elseif opcode == "BOT_EMBLEM" and #parts >= 5 then
-        local emblems = Bridge.BotEmblems and Bridge.BotEmblems[string.lower(name)] or { name = name, emblems = {} }
-        emblems.emblems[tonumber(parts[3]) or 0] = tonumber(parts[4]) or 0
-        Bridge.BotEmblems[string.lower(name)] = emblems
+        Bridge.BotEmblems[key] = { name = name, token = token, emblems = {}, money = 0 }
+        return
+    end
+
+    local emblems = Bridge.BotEmblems and Bridge.BotEmblems[key]
+    if not emblems or emblems.token ~= token then
+        Bridge.DebugPrint("[EMBLEM DEBUG] Ignoring stale emblem chunk opcode=" .. tostring(opcode) .. " bot=" .. tostring(name) .. " token=" .. tostring(token) .. " current=" .. tostring(emblems and emblems.token or "nil"))
+        return
+    end
+
+    if opcode == "BOT_EMBLEM" and #parts >= 5 then
+        emblems.emblems[tonumber(parts[4]) or 0] = tonumber(parts[5]) or 0
+        Bridge.BotEmblems[key] = emblems
     elseif opcode == "BOT_EMBLEMS_MONEY" and #parts >= 3 then
-        local emblems = Bridge.BotEmblems and Bridge.BotEmblems[string.lower(name)] or { name = name, money = 0 }
-        emblems.money = tonumber(parts[3]) or 0
-        Bridge.BotEmblems[string.lower(name)] = emblems
+        emblems.money = tonumber(parts[4]) or 0
+        Bridge.BotEmblems[key] = emblems
     elseif opcode == "BOT_EMBLEMS_END" then
-        Bridge.FireCallback("BotEmblemsUpdated", name, Bridge.BotEmblems and Bridge.BotEmblems[string.lower(name)])
+        Bridge.BotEmblems[key] = emblems
+        Bridge.FireCallback("BotEmblemsUpdated", name, emblems)
     end
 end
 
@@ -825,7 +872,18 @@ function Bridge.ApplyProfessionRecipesPayload(payload)
         local skillId = tonumber(rest) or 0
         local key = string.lower(name) .. ":" .. tostring(skillId)
         Bridge.ProfessionRecipes[key] = { name = name, token = token, skillId = skillId, recipes = {}, loading = true }
-    elseif opcode == "PROFESSION_RECIPES_ITEM" then
+        return
+    end
+
+    local skillId = tonumber(rest:match("^(%d+)")) or 0
+    local key = string.lower(name) .. ":" .. tostring(skillId)
+    local recipes = Bridge.ProfessionRecipes[key]
+    if not recipes or recipes.token ~= token then
+        Bridge.DebugPrint("[RECIPES DEBUG] Ignoring stale recipe chunk opcode=" .. tostring(opcode) .. " bot=" .. tostring(name) .. " token=" .. tostring(token) .. " current=" .. tostring(recipes and recipes.token or "nil"))
+        return
+    end
+
+    if opcode == "PROFESSION_RECIPES_ITEM" then
         local skillId, rest2 = splitOnce(rest, "~")
         local spellId, rest3 = splitOnce(rest2, "~")
         local itemId, rest4 = splitOnce(rest3, "~")
@@ -844,20 +902,15 @@ function Bridge.ApplyProfessionRecipesPayload(payload)
         })
         Bridge.ProfessionRecipes[key] = recipes
     elseif opcode == "PROFESSION_RECIPES_END" then
-        local skillId = tonumber(rest) or 0
-        local key = string.lower(name) .. ":" .. tostring(skillId)
-        local recipes = Bridge.ProfessionRecipes[key] or { name = name, token = token, skillId = skillId, recipes = {} }
         recipes.loading = false
         Bridge.ProfessionRecipes[key] = recipes
-        Bridge.FireCallback("ProfessionRecipesUpdated", name, skillId, recipes.recipes)
+        local finalSkillId = tonumber(rest:match("^(%d+)")) or 0
+        Bridge.FireCallback("ProfessionRecipesUpdated", name, finalSkillId, recipes.recipes)
     end
 end
 
 function Bridge.ApplyGlyphsPayload(payload)
-    -- GLYPHS_BEGIN~BotName~SessionID
-    -- GLYPH~BotName~SessionID~SocketIndex~GlyphSpellId~GlyphTooltip
-    -- GLYPHS_END~BotName~SessionID
-
+    -- GLYPHS~BotName~Token or GLYPH~BotName~Token~...
     local parts = {}
     for s in string.gmatch(payload or "", "[^~]+") do table.insert(parts, s) end
 
@@ -867,19 +920,31 @@ function Bridge.ApplyGlyphsPayload(payload)
     if name == "" then return end
 
     local opcode = parts[2]
+    local token = parts[3]
+    local key = string.lower(name)
+
     if opcode == "GLYPHS_BEGIN" then
-        local glyphs = { name = name, glyphs = {} }
-        Bridge.Glyphs[string.lower(name)] = glyphs
-    elseif opcode == "GLYPH" and #parts >= 5 then
-        local glyphs = Bridge.Glyphs[string.lower(name)] or { name = name, glyphs = {} }
+        Bridge.Glyphs[key] = { name = name, token = token, glyphs = {}, loading = true }
+        return
+    end
+
+    local glyphs = Bridge.Glyphs[key]
+    if not glyphs or glyphs.token ~= token then
+        Bridge.DebugPrint("[GLYPHS DEBUG] Ignoring stale glyph chunk opcode=" .. tostring(opcode) .. " bot=" .. tostring(name) .. " token=" .. tostring(token) .. " current=" .. tostring(glyphs and glyphs.token or "nil"))
+        return
+    end
+
+    if opcode == "GLYPH" and #parts >= 5 then
         table.insert(glyphs.glyphs, {
-            socketIndex = tonumber(parts[3]) or 0,
-            spellId = tonumber(parts[4]) or 0,
-            tooltip = trim(parts[5]),
+            socketIndex = tonumber(parts[4]) or 0,
+            spellId = tonumber(parts[5]) or 0,
+            tooltip = trim(parts[6]),
         })
-        Bridge.Glyphs[string.lower(name)] = glyphs
+        Bridge.Glyphs[key] = glyphs
     elseif opcode == "GLYPHS_END" then
-        Bridge.FireCallback("GlyphsUpdated", name, Bridge.Glyphs[string.lower(name)])
+        glyphs.loading = false
+        Bridge.Glyphs[key] = glyphs
+        Bridge.FireCallback("GlyphsUpdated", name, glyphs)
     end
 end
 
@@ -887,9 +952,19 @@ function Bridge.ApplyOutfitsPayload(payload)
     local opcode, name, token, rest = parseOpcodePayload(payload)
     if name == "" then return end
     local key = string.lower(name)
+
     if opcode == "OUTFITS_BEGIN" or opcode == "OUTFITS" then
         Bridge.Outfits[key] = { name = name, token = token, outfits = {}, loading = true }
-    elseif opcode == "OUTFITS_ITEM" then
+        return
+    end
+
+    local outfits = Bridge.Outfits[key]
+    if not outfits or outfits.token ~= token then
+        Bridge.DebugPrint("[OUTFITS DEBUG] Ignoring stale outfit chunk opcode=" .. tostring(opcode) .. " bot=" .. tostring(name) .. " token=" .. tostring(token) .. " current=" .. tostring(outfits and outfits.token or "nil"))
+        return
+    end
+
+    if opcode == "OUTFITS_ITEM" then
         local rawLine = trim(urlDecode(rest))
         local setName, itemText = splitOnce(rawLine, ":")
         local outfits = Bridge.Outfits[key] or { name = name, outfits = {} }
@@ -898,7 +973,6 @@ function Bridge.ApplyOutfitsPayload(payload)
     elseif opcode == "OUTFITS_CMD" then
         Bridge.FireCallback("OutfitCommandResult", name, trim(rest))
     elseif opcode == "OUTFITS_END" then
-        local outfits = Bridge.Outfits[key] or { name = name, outfits = {} }
         outfits.loading = false
         Bridge.Outfits[key] = outfits
         Bridge.FireCallback("OutfitsUpdated", name, outfits)
@@ -909,26 +983,33 @@ function Bridge.ApplyTrainerPayload(payload)
     local opcode, name, token, rest = parseOpcodePayload(payload)
     if name == "" then return end
     local key = string.lower(name)
+
     if opcode == "TRAINER_BEGIN" or opcode == "TRAINER" then
         local trainerEntry, trainerName = splitOnce(rest, "~")
         Bridge.Trainer[key] = { name = name, token = token, trainerEntry = tonumber(trainerEntry) or 0, trainerName = trim(urlDecode(trainerName)), spells = {}, loading = true }
-    elseif opcode == "TRAINER_ITEM" or opcode == "TRAINER_SPELL" then
+        return
+    end
+
+    local trainer = Bridge.Trainer[key]
+    if not trainer or trainer.token ~= token then
+        Bridge.DebugPrint("[TRAINER DEBUG] Ignoring stale trainer chunk opcode=" .. tostring(opcode) .. " bot=" .. tostring(name) .. " token=" .. tostring(token) .. " current=" .. tostring(trainer and trainer.token or "nil"))
+        return
+    end
+
+    if opcode == "TRAINER_ITEM" or opcode == "TRAINER_SPELL" then
         local trainerEntry, rest2 = splitOnce(rest, "~")
         local spellId, rest3 = splitOnce(rest2, "~")
         local cost, canAfford = splitOnce(rest3, "~")
-        local trainer = Bridge.Trainer[key] or { name = name, spells = {} }
         local sid = tonumber(spellId) or 0
         local spellName = GetSpellInfo and GetSpellInfo(sid) or nil
         table.insert(trainer.spells, { trainerEntry = tonumber(trainerEntry) or trainer.trainerEntry or 0, spellId = sid, name = spellName or ("Spell #" .. tostring(sid)), cost = tonumber(cost) or 0, canAfford = tostring(canAfford) == "1" })
         Bridge.Trainer[key] = trainer
     elseif opcode == "TRAINER_ERROR" then
         local trainerEntry, reason = splitOnce(rest, "~")
-        local trainer = Bridge.Trainer[key] or { name = name, spells = {} }
         trainer.trainerEntry = tonumber(trainerEntry) or trainer.trainerEntry or 0
         trainer.error = trim(urlDecode(reason)) ~= "" and trim(urlDecode(reason)) or "UNKNOWN_ERROR"
         Bridge.Trainer[key] = trainer
     elseif opcode == "TRAINER_END" then
-        local trainer = Bridge.Trainer[key] or { name = name, spells = {} }
         trainer.loading = false
         Bridge.Trainer[key] = trainer
         Bridge.FireCallback("TrainerUpdated", name, trainer)
@@ -936,44 +1017,51 @@ function Bridge.ApplyTrainerPayload(payload)
 end
 
 function Bridge.ApplyQuestsPayload(payload)
-    -- QUESTS_BEGIN~BotName~SessionID~Mode
-    -- QUESTS_ITEM~BotName~SessionID~Mode~Status~QuestId~QuestName
-    -- QUESTS_END~BotName~SessionID
-
+    -- QUESTS~Mode~BotName~Token or QUESTS_BEGIN~Mode~BotName~Token
     local parts = {}
     for s in string.gmatch(payload or "", "[^~]+") do table.insert(parts, s) end
 
-    if #parts < 2 then return end
+    if #parts < 3 then return end
 
-    local opcode, name
+    local opcode, name, token, mode
     if tostring(parts[1]):find("^QUESTS") then
         opcode = parts[1]
-        name = trim(urlDecode(parts[2]))
-        table.remove(parts, 1)
+        mode = trim(parts[2])
+        name = trim(urlDecode(parts[3]))
+        token = parts[4]
     else
-        name = trim(urlDecode(parts[1]))
-        opcode = parts[2]
+        mode = trim(parts[1])
+        name = trim(urlDecode(parts[2]))
+        token = parts[3]
+        opcode = parts[4]
     end
     if name == "" then return end
-    local fieldOffset = (parts[2] == opcode) and 1 or 0
-    if opcode == "QUESTS_BEGIN" and #parts >= 3 then
-        local quests = {
-            name = name,
-            mode = trim(parts[3 + fieldOffset]),
-            quests = {},
-        }
-        Bridge.Quests[string.lower(name)] = quests
-    elseif opcode == "QUESTS_ITEM" and #parts >= 6 then
-        local quests = Bridge.Quests[string.lower(name)] or { name = name, quests = {} }
+
+    local key = string.lower(name)
+
+    if opcode == "QUESTS_BEGIN" then
+        Bridge.Quests[key] = { name = name, mode = mode, token = token, quests = {}, loading = true }
+        return
+    end
+
+    local quests = Bridge.Quests[key]
+    if not quests or quests.token ~= token then
+        Bridge.DebugPrint("[QUESTS DEBUG] Ignoring stale quest chunk opcode=" .. tostring(opcode) .. " bot=" .. tostring(name) .. " token=" .. tostring(token) .. " current=" .. tostring(quests and quests.token or "nil"))
+        return
+    end
+
+    if opcode == "QUESTS_ITEM" and #parts >= 4 then
         table.insert(quests.quests, {
-            mode = trim(parts[3 + fieldOffset]),
-            status = trim(parts[4 + fieldOffset]),
-            questId = tonumber(parts[5 + fieldOffset]) or 0,
-            questName = trim(urlDecode(parts[6 + fieldOffset])) or "",
+            mode = mode,
+            status = trim(parts[3]),
+            questId = tonumber(parts[4]) or 0,
+            questName = trim(urlDecode(parts[5])) or "",
         })
-        Bridge.Quests[string.lower(name)] = quests
+        Bridge.Quests[key] = quests
     elseif opcode == "QUESTS_END" then
-        Bridge.FireCallback("QuestsUpdated", name, Bridge.Quests[string.lower(name)])
+        quests.loading = false
+        Bridge.Quests[key] = quests
+        Bridge.FireCallback("QuestsUpdated", name, quests)
     end
 end
 

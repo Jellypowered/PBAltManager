@@ -133,11 +133,85 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     local tradeTarget = nil
     local tradeInitiatedAt = 0  -- timestamp when InitiateTrade was called
 
+    -- Forward declarations for callback helpers/UI objects. Lua local scope starts
+    -- at the declaration, so callbacks defined before these helpers need this.
+    local titleFs, slotsFs, goldFs, content
+    local ClearRows, HideTargetMenu, Row, UpdateRowHighlights
+
+    -- InventoryUpdated / BankUpdated: only update the UI, do NOT re-trigger OnBotSelect.
+    -- Re-triggering creates a cascade (callback → OnBotSelect → RequestInventoryRefresh)
+    -- that overlaps with the initial request cycle, causing token collisions and lost data.
+    -- Render inventory rows from bridge data (used by callbacks and OnBotSelect).
+    local function RenderInventoryRows(inv, bank)
+        if not inv then return false end
+        goldFs:SetText("Gold: " .. MoneyText(inv.goldCopper) .. (bank and bank.goldCopper and ("   Bank: " .. MoneyText(bank.goldCopper)) or ""))
+        slotsFs:SetText(string.format("Bags: %d / %d", inv.bagUsed or 0, inv.bagTotal or 0))
+        if not inv.items or #inv.items == 0 then
+            local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Box_01"); r.text:SetText("No inventory items returned."); content:SetHeight(60); return false
+        end
+        for i, item in ipairs(inv.items) do local r = Row(i); r.item=item; r.itemText=ItemText(item); r.icon:SetTexture(ItemIcon(item)); r.text:SetText(ItemText(item)) end
+        UpdateRowHighlights(); content:SetHeight(20 + #inv.items * ROW_H)
+        return true
+    end
+    -- Render bank rows from bridge data.
+    local function RenderBankRows(bank)
+        if not bank then return false end
+        if bank.error and bank.error ~= "" then
+            local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_Coin_02"); r.text:SetText("Bank unavailable: " .. bank.error)
+            content:SetHeight(60); return false
+        end
+        if not bank.items or #bank.items == 0 then
+            local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Box_02"); r.text:SetText("Nothing in this bot's bank.")
+            content:SetHeight(60); return false
+        end
+        for i, item in ipairs(bank.items) do local r = Row(i); r.item=item; r.itemText=ItemText(item); r.icon:SetTexture(ItemIcon(item)); r.text:SetText(ItemText(item)) end
+        UpdateRowHighlights(); content:SetHeight(20 + #bank.items * ROW_H)
+        return true
+    end
+    -- InventoryUpdated / BankUpdated: only update the UI, do NOT re-trigger OnBotSelect.
+    -- Re-triggering creates a cascade (callback → OnBotSelect → RequestInventoryRefresh)
+    -- that overlaps with the initial request cycle, causing token collisions and lost data.
     PBAM.Bridge.RegisterCallback("InventoryUpdated", function(botName)
-        if botName == PBAM.SelectedBot and PBAM.CurrentTab == "Inventory" and panel.OnBotSelect then panel.OnBotSelect(botName) end
+        if botName ~= PBAM.SelectedBot or PBAM.CurrentTab ~= "Inventory" then return end
+        local key = string.lower(botName)
+        local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
+        local bank = PBAM.Bridge.Bank and PBAM.Bridge.Bank[key]
+        ClearRows(); HideTargetMenu()
+        if showingBank then
+            titleFs:SetText("Bank")
+            goldFs:SetText("Bank Gold: " .. MoneyText(bank and bank.goldCopper or 0))
+            slotsFs:SetText(bank and bank.error and ("Banker: " .. bank.error) or "Click bank items to request bridge withdraw")
+            if not RenderBankRows(bank) then
+                if not bank then
+                    local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_PocketWatch_01"); r.text:SetText("Requesting bank data...")
+                    content:SetHeight(60)
+                end
+            end
+        else
+            titleFs:SetText("Inventory")
+            if not RenderInventoryRows(inv, bank) then
+                if not inv then
+                    goldFs:SetText("Gold: loading..."); slotsFs:SetText("")
+                    local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_PocketWatch_01"); r.text:SetText("Requesting inventory...")
+                end
+                content:SetHeight(math.max(content:GetHeight(), 60))
+            end
+        end
     end)
     PBAM.Bridge.RegisterCallback("BankUpdated", function(botName)
-        if botName == PBAM.SelectedBot and PBAM.CurrentTab == "Inventory" and panel.OnBotSelect then panel.OnBotSelect(botName) end
+        if botName ~= PBAM.SelectedBot or PBAM.CurrentTab ~= "Inventory" then return end
+        local key = string.lower(botName)
+        local bank = PBAM.Bridge.Bank and PBAM.Bridge.Bank[key]
+        ClearRows(); HideTargetMenu()
+        titleFs:SetText("Bank")
+        goldFs:SetText("Bank Gold: " .. MoneyText(bank and bank.goldCopper or 0))
+        slotsFs:SetText(bank and bank.error and ("Banker: " .. bank.error) or "Click bank items to request bridge withdraw")
+        if not RenderBankRows(bank) then
+            if not bank then
+                local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_PocketWatch_01"); r.text:SetText("Requesting bank data...")
+                content:SetHeight(60)
+            end
+        end
     end)
     PBAM.Bridge.RegisterCallback("InventoryItemActionResult", function(result)
         if not result or result.botName ~= PBAM.SelectedBot or PBAM.CurrentTab ~= "Inventory" then return end
@@ -160,19 +234,19 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     header:SetHeight(100)
     AddBackdrop(header, 0.55)
 
-    local titleFs = PBAM.CreateSectionHeader(header, "Inventory", -10, 13)
+    titleFs = PBAM.CreateSectionHeader(header, "Inventory", -10, 13)
     local controlsFrame = CreateFrame("Frame", nil, header)
     controlsFrame:SetPoint("TOPRIGHT", titleFs.goldLine or titleFs, "BOTTOMRIGHT", 0, -4)
     controlsFrame:SetSize(292, 34)
     AddBackdrop(controlsFrame, 0.22)
 
-    local slotsFs = header:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    slotsFs = header:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     slotsFs:SetPoint("TOPLEFT", titleFs, "BOTTOMLEFT", 4, -10)
     slotsFs:SetPoint("RIGHT", header, "RIGHT", -320, 0)
     PBAM.WrapFontString(slotsFs, 220)
     slotsFs:SetTextColor(0.7, 0.7, 0.7, 1)
 
-    local goldFs = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    goldFs = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     goldFs:SetPoint("TOPLEFT", slotsFs, "BOTTOMLEFT", 0, -6)
     goldFs:SetPoint("RIGHT", header, "RIGHT", -320, 0)
     PBAM.WrapFontString(goldFs, 220)
@@ -203,7 +277,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     scroll:EnableMouseWheel(true)
     scroll:SetScript("OnMouseWheel", function(self, delta) self:SetVerticalScroll(math.max(0, math.min(self:GetVerticalScrollRange(), self:GetVerticalScroll() - delta * 28))) end)
 
-    local content = CreateFrame("Frame", nil, scroll)
+    content = CreateFrame("Frame", nil, scroll)
     content:SetWidth(390)
     scroll:SetScrollChild(content)
     AddBackdrop(content, 0.35)
@@ -276,7 +350,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         targetButton:SetText(tradeTarget or "Choose")
     end
 
-    local function HideTargetMenu()
+    HideTargetMenu = function()
         targetMenu:Hide()
     end
 
@@ -352,10 +426,26 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         return true
     end
 
+    -- Debounce: prevent rapid overlapping refresh cycles (e.g. callback → OnBotSelect → this).
+    local lastRefreshTime = 0
     local function RequestInventoryRefresh()
+        local now = GetTime() or 0
+        if PBAM.SelectedBot and (now - lastRefreshTime) < 3 then return end
+        lastRefreshTime = now
         if not PBAM.SelectedBot then return end
-        After(0.50, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
-        After(1.25, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
+        local key = string.lower(PBAM.SelectedBot)
+        local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
+        if inv and inv.loading then return end
+        After(1.50, function()
+            local currentKey = PBAM.SelectedBot and string.lower(PBAM.SelectedBot)
+            local currentInv = currentKey and PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[currentKey]
+            if PBAM.SelectedBot and not (currentInv and currentInv.loading) then PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end
+        end)
+        After(2.25, function()
+            local currentKey = PBAM.SelectedBot and string.lower(PBAM.SelectedBot)
+            local currentInv = currentKey and PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[currentKey]
+            if PBAM.SelectedBot and not (currentInv and currentInv.loading) then PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end
+        end)
     end
 
     local function RequestEquipmentRefresh()
@@ -364,7 +454,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         After(1.75, function() if PBAM.SelectedBot and PBAM.RefreshEquipmentTab then PBAM.RefreshEquipmentTab(PBAM.SelectedBot, true) end end)
     end
 
-    local function UpdateRowHighlights()
+    UpdateRowHighlights = function()
         local selectedText = selectedTradeItem and ItemText(selectedTradeItem) or nil
         for i, r in ipairs(rows) do
             if r.bg then
@@ -428,6 +518,9 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             local name = ItemName(item)
             if SendLegacyInventoryCommand("t", PBAM.SelectedBot, item, "1") then
                 LogStatus(statusFs, "Sent trade command for " .. name .. " to " .. PBAM.SelectedBot .. ".", 0.35, 0.9, 0.45)
+                -- Auto-refresh after successful trade (within 5s total)
+                After(1.50, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
+                After(2.25, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
             else
                 LogStatus(statusFs, "Selected " .. name .. " for trade. Could not send command.", 0.95, 0.8, 0.25)
             end
@@ -437,11 +530,11 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         LogStatus(statusFs, "No action mode enabled. Enable Equip Mode or Trade Mode first.", 0.95, 0.8, 0.25)
     end
 
-    local function ClearRows()
+    ClearRows = function()
         for _, r in ipairs(rows) do r:Hide() end
     end
 
-    local function Row(i)
+    Row = function(i)
         if rows[i] then rows[i]:Show(); return rows[i] end
         local r = CreateFrame("Frame", nil, content)
         r:SetHeight(ROW_H); r:SetPoint("TOPLEFT", content, "TOPLEFT", 8, -8 - (i - 1) * ROW_H); r:SetPoint("RIGHT", content, "RIGHT", -8, 0)
@@ -559,7 +652,12 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
 
         titleFs:SetText("Inventory")
         if not inv then
+            PBAM.Bridge.Inventory[key] = { name = botName, items = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
             PBAM.Bridge.RequestInventory(botName)
+            local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_PocketWatch_01"); r.text:SetText("Requesting inventory...")
+            goldFs:SetText("Gold: loading..."); slotsFs:SetText(""); content:SetHeight(60); return
+        end
+        if inv.loading then
             local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_PocketWatch_01"); r.text:SetText("Requesting inventory...")
             goldFs:SetText("Gold: loading..."); slotsFs:SetText(""); content:SetHeight(60); return
         end
