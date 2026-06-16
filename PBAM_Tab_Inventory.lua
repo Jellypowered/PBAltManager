@@ -115,6 +115,25 @@ local function GetEligibleTradeTargets()
     return targets
 end
 
+-- Check if current target is a valid vendor NPC (like MultiBot-Chatless)
+-- Player must have selected the target (not the bot), and it should be a vendor NPC
+local function GetCurrentMerchantTargetName()
+    -- Target must exist and not be a player (playerbots check UNIT_NPC_FLAG_VENDOR)
+    if not UnitExists("target") then
+        return nil
+    end
+    if UnitIsPlayer("target") then
+        return nil
+    end
+    
+    local name = UnitName("target")
+    if not name or name == "" or name == "Unknown Entity" then
+        return nil
+    end
+    
+    return name
+end
+
 local function AddBackdrop(frame, alpha)
     if PBAM and PBAM.ApplyBackdrop then PBAM.ApplyBackdrop(frame, alpha); return end
     if frame and frame.SetBackdrop then
@@ -128,7 +147,10 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     local rows, targetRows = {}, {}
     local showingBank = false
     local equipMode = false
+    local destroyMode = false
     local tradeMode = false
+    local sellMode = false
+    local sellBatch = false
     local selectedTradeItem = nil
     local tradeTarget = nil
     local tradeInitiatedAt = 0  -- timestamp when InitiateTrade was called
@@ -282,7 +304,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     scroll:SetScrollChild(content)
     AddBackdrop(content, 0.35)
 
-    local function CheckButton(name, y)
+    local function CheckButtonLeft(name, y)
         local b = CreateFrame("CheckButton", nil, actionPanel, "UICheckButtonTemplate")
         b:SetPoint("TOPLEFT", actionPanel, "TOPLEFT", 16, y)
         b:SetSize(26, 26)
@@ -292,17 +314,39 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         return b
     end
 
-    local equipCheck = CheckButton("Equip Mode", -48)
-    local tradeCheck = CheckButton("Trade Mode", -86)
+    local function CheckButtonRight(name, y)
+        local b = CreateFrame("CheckButton", nil, actionPanel, "UICheckButtonTemplate")
+        b:SetPoint("TOPRIGHT", actionPanel, "TOPRIGHT", -128, y)
+        b:SetSize(26, 26)
+        b.label = b:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        b.label:SetPoint("LEFT", b, "RIGHT", 4, 0)
+        b.label:SetText(name)
+        return b
+    end
 
-    local targetLabel = actionPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    targetLabel:SetPoint("TOPLEFT", actionPanel, "TOPLEFT", 18, -126)
-    targetLabel:SetText("Trade Target")
+    local equipCheck = CheckButtonLeft("Equip Mode", -24)
+    local destroyCheck = CheckButtonRight("Destroy Mode", -24)
+    local tradeCheck = CheckButtonLeft("Trade Mode", -48)
+    local sellCheck = CheckButtonLeft("Sell Mode", -72)
+    local sellBatch = CheckButtonRight("Batch Mode", -72)
+
+    local tradeTargetLabel = actionPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    tradeTargetLabel:SetPoint("TOPLEFT", actionPanel, "TOPLEFT", 18, -124)
+    tradeTargetLabel:SetText("Trade Target")
 
     local targetButton = CreateFrame("Button", nil, actionPanel, "UIPanelButtonTemplate")
     targetButton:SetSize(180, 24)
-    targetButton:SetPoint("TOPLEFT", targetLabel, "BOTTOMLEFT", 0, -6)
+    targetButton:SetPoint("TOPLEFT", tradeTargetLabel, "BOTTOMLEFT", 0, -6)
     targetButton:SetText("Choose")
+
+    local function SellButton(text, y)
+        local b = CreateFrame("Button", nil, actionPanel, "UIPanelButtonTemplate")
+        b:SetSize(120, 24); b:SetPoint("TOPLEFT", actionPanel, "TOPLEFT", 18, y)
+        b:SetText(text)
+        return b
+    end
+    local sellGreysBtn = SellButton("Sell Greys", -190)
+    local sellVendorBtn = SellButton("Sell Vendorable", -224)
 
     local targetMenu = CreateFrame("Frame", nil, panel)
     targetMenu:SetFrameStrata("DIALOG")
@@ -320,12 +364,12 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     targetScroll:SetScrollChild(targetContent)
 
     local statusFs = actionPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    statusFs:SetPoint("TOPLEFT", actionPanel, "TOPLEFT", 18, -190)
+    statusFs:SetPoint("TOPLEFT", actionPanel, "TOPLEFT", 18, -330)
     statusFs:SetPoint("RIGHT", actionPanel, "RIGHT", -18, 0)
     statusFs:SetJustifyH("LEFT")
     PBAM.WrapFontString(statusFs, 324)
     statusFs:SetTextColor(0.7, 0.7, 0.7, 1)
-    statusFs:SetText("Trade Mode opens trade with the selected bot. Click an item to insert it using 't' + 'give' commands.")
+    statusFs:SetText("Sell Mode uses your current target like Trainer. Target a vendor NPC first.")
     panel.StatusText = statusFs
 
     local hintFs = actionPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -344,6 +388,9 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         PBAM.SetButtonEnabled(targetButton, hasBot and tradeMode, tradeMode and "No trade target is available right now." or "Enable Trade Mode to choose a trade target.")
         equipCheck:SetEnabled(hasBot)
         tradeCheck:SetEnabled(hasBot)
+        sellCheck:SetEnabled(hasBot)
+        sellBatch:SetEnabled(hasBot)
+        destroyCheck:SetEnabled(hasBot)
     end
 
     local function SetTargetText()
@@ -508,7 +555,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             local now = GetTime and GetTime() or 0
             local elapsed = now - tradeInitiatedAt
             -- Wait for bot AI to process SMSG_TRADE_STATUS and be ready to receive items
-            if elapsed < 2.5 then
+            if elapsed < 1.0 then
                 LogStatus(statusFs, "Please wait... Bot accepting trade. Try again in " .. string.format("%.1f", 2.5 - elapsed) .. "s.", 0.95, 0.8, 0.25)
                 return
             end
@@ -527,7 +574,47 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             return
         end
 
-        LogStatus(statusFs, "No action mode enabled. Enable Equip Mode or Trade Mode first.", 0.95, 0.8, 0.25)
+        if sellMode then
+            local link = ItemLink(item)
+            local name = ItemName(item)
+            if not link or link == "" then
+                LogStatus(statusFs, "Cannot sell: item link unavailable.", 1, 0.35, 0.25)
+                return
+            end
+            local currentTarget = GetCurrentMerchantTargetName()
+            if not currentTarget or currentTarget == "" then
+                LogStatus(statusFs, "Select a vendor first!", 1, 0.35, 0.25)
+                return
+            end
+            -- Send 's <itemLink>' command to sell the item
+            if DEFAULT_CHAT_FRAME then
+                DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " s " .. string.sub(link, 1, 100))
+            end
+            SendChatMessage("s " .. link, "WHISPER", nil, PBAM.SelectedBot)
+            LogStatus(statusFs, "Sent sell command for " .. name .. (sellBatch:GetChecked() and " (batch mode: whole stack)" or "") .. ". Refreshing in 1.25s...", 0.35, 0.9, 0.45)
+            After(1.25, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
+            return
+        end
+
+        if destroyCheck then
+            local link = ItemLink(item)
+            local name = ItemName(item)
+            if not link or link == "" then
+                LogStatus(statusFs, "Cannot destroy: item link unavailable.", 1, 0.35, 0.25)
+                return
+            end
+            
+            -- Send 'destroy <itemLink>' command to destroy the item
+            if DEFAULT_CHAT_FRAME then
+                DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " destroy " .. string.sub(link, 1, 100))
+            end
+            SendChatMessage("destroy " .. link, "WHISPER", nil, PBAM.SelectedBot)
+            LogStatus(statusFs, "Sent destroy command for " .. name .. ". Refreshing in 1.25s...", 0.35, 0.9, 0.45)
+            After(1.25, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
+            return
+        end
+
+        LogStatus(statusFs, "No action mode enabled. Enable Equip Mode, Trade Mode, Destroy Mode, or Sell Mode first.", 0.95, 0.8, 0.25)
     end
 
     ClearRows = function()
@@ -560,6 +647,9 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     equipCheck:SetScript("OnClick", function(self)
         equipMode = self:GetChecked() and true or false
         if equipMode then
+            destroyCheck:SetChecked(false)
+            sellCheck:SetChecked(false)
+            sellBatch:SetChecked(false)
             tradeMode = false; tradeCheck:SetChecked(false); HideTargetMenu()
             if CancelTrade then CancelTrade() end
             LogStatus(statusFs, "Equip Mode enabled. Left-click normal/main hand; right-click offhand/standard legacy equip.", 0.35, 0.9, 0.45)
@@ -572,6 +662,9 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     tradeCheck:SetScript("OnClick", function(self)
         tradeMode = self:GetChecked() and true or false
         if tradeMode then
+            destroyCheck:SetChecked(false)
+            sellCheck:SetChecked(false)
+            sellBatch:SetChecked(false)
             equipMode = false; equipCheck:SetChecked(false); RefreshTargetDropdown()
             tradeInitiatedAt = GetTime and GetTime() or 0
             if PBAM.SelectedBot then
@@ -586,6 +679,74 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             LogStatus(statusFs, "Trade Mode disabled and trade canceled.", 0.75, 0.75, 0.75)
         end
         UpdateActionButtons(PBAM.SelectedBot)
+    end)
+
+    sellCheck:SetScript("OnClick", function(self)
+        sellMode = self:GetChecked() and true or false
+        if sellMode then
+            equipCheck:SetChecked(false)
+            tradeCheck:SetChecked(false)
+            destroyCheck:SetChecked(false)
+
+            LogStatus(statusFs, "Sell Mode enabled. Target a vendor NPC first.", 0.35, 0.9, 0.45)
+        else
+            LogStatus(statusFs, "Sell Mode disabled.", 0.75, 0.75, 0.75)
+        end
+        UpdateActionButtons(PBAM.SelectedBot)
+    end)
+
+    sellGreysBtn:SetScript("OnClick", function()
+        if not PBAM.SelectedBot or not sellMode then return end
+        local currentTarget = GetCurrentMerchantTargetName()
+        if not currentTarget or currentTarget == "" then
+            LogStatus(statusFs, "Select a vendor first!", 1, 0.35, 0.25)
+            return
+        end
+        -- Send 's *' command to sell all grey items
+        if DEFAULT_CHAT_FRAME then
+            DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " s *")
+        end
+        SendChatMessage("s *", "WHISPER", nil, PBAM.SelectedBot)
+        After(1.25, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
+    end)
+
+    sellVendorBtn:SetScript("OnClick", function()
+        if not PBAM.SelectedBot or not sellMode then return end
+        local currentTarget = GetCurrentMerchantTargetName()
+        if not currentTarget or currentTarget == "" then
+            LogStatus(statusFs, "Select a vendor first!", 1, 0.35, 0.25)
+            return
+        end
+        -- Send 's vendor' command to sell all vendorable items
+        if DEFAULT_CHAT_FRAME then
+            DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " s vendor")
+        end
+        SendChatMessage("s vendor", "WHISPER", nil, PBAM.SelectedBot)
+        After(1.25, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
+    end)
+
+    sellBatch:SetScript("OnClick", function(self)
+        if self:GetChecked() and not sellMode then
+            self:SetChecked(false)
+            LogStatus(statusFs, "Batch Mode requires Sell Mode to be enabled.", 1, 0.7, 0.25)
+        elseif self:GetChecked() then
+            LogStatus(statusFs, "Batch Mode enabled. Currently sells whole stack on item click (same as single mode).", 0.95, 0.8, 0.25)
+        else
+            LogStatus(statusFs, "Batch Mode disabled.", 0.75, 0.75, 0.75)
+        end
+    end)
+
+    destroyCheck:SetScript("OnClick", function(self)
+        if self:GetChecked() then
+            -- Disable all other mode checkboxes when Destroy Mode is enabled
+            equipCheck:SetChecked(false)
+            tradeCheck:SetChecked(false)
+            sellCheck:SetChecked(false)
+            sellBatch:SetChecked(false)
+            LogStatus(statusFs, "Destroy Mode enabled. Use with caution.", 0.95, 0.8, 0.25)
+        else
+            LogStatus(statusFs, "Destroy Mode disabled.", 0.75, 0.75, 0.75)
+        end
     end)
 
     refreshBtn:SetScript("OnClick", function()
@@ -623,7 +784,6 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     panel.OnBotSelect = function(botName)
         ClearRows()
         HideTargetMenu()
-        RefreshTargetDropdown()
         UpdateActionButtons(botName)
         if not botName then emptyFs:Show(); header:Hide(); body:Hide(); return end
         emptyFs:Hide(); header:Show(); body:Show()
