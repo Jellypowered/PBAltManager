@@ -162,6 +162,8 @@ local function CreateDropdown(parent, values)
             info.text = entry.label or tostring(entry.value)
             info.value = entry.value
             info.checked = (entry.value == self.selectedValue)
+            info.tooltipTitle = entry.tooltipTitle or entry.label or tostring(entry.value)
+            info.tooltipText = entry.tooltipText or entry.tooltip or nil
             info.func = function()
                 self:SetValue(entry.value)
                 if entry.onSelect then entry.onSelect(entry.value, entry) end

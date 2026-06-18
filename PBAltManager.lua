@@ -10,6 +10,7 @@ PBAM.Version = "0.1.0"
 PBAMConfig = PBAMConfig or {}
 PBAMConfig.Minimap = PBAMConfig.Minimap or { hide = false, angle = 0 }
 PBAMConfig.MainWindow = PBAMConfig.MainWindow or { width = 800, height = 600 }
+PBAMConfig.RosterSort = PBAMConfig.RosterSort or "alpha"
 
 PBAM.MainWindow = nil
 PBAM.SelectedBot = nil
@@ -35,6 +36,79 @@ PBAM.LogInfo = function(msg)
     if DEFAULT_CHAT_FRAME then
         DEFAULT_CHAT_FRAME:AddMessage("|cFF69CCF0[PBAltManager]|r " .. tostring(msg or ""))
     end
+end
+
+local TREE_NAMES = {
+    WARRIOR={"Arms","Fury","Protection"}, PALADIN={"Holy","Protection","Retribution"}, HUNTER={"Beast Mastery","Marksmanship","Survival"},
+    ROGUE={"Assassination","Combat","Subtlety"}, PRIEST={"Discipline","Holy","Shadow"}, DEATHKNIGHT={"Blood","Frost","Unholy"},
+    SHAMAN={"Elemental","Enhancement","Restoration"}, MAGE={"Arcane","Fire","Frost"}, WARLOCK={"Affliction","Demonology","Destruction"}, DRUID={"Balance","Feral","Restoration"},
+}
+
+local ROLE_BY_SPEC = {
+    Protection="Tank", ["Protection Warrior"]="Tank", Blood="Tank", Feral="Tank/DPS",
+    Holy="Healer", ["Holy Pala"]="Healer", Discipline="Healer", Restoration="Healer",
+}
+
+local ROLE_SORT_ORDER = { Tank=1, Healer=2, DPS=3, ["Tank/DPS"]=3, Unknown=4, ["N/A"]=4 }
+
+local function ClassKey(className)
+    local s = tostring(className or ""):upper():gsub("%s+", "")
+    if s == "DEATHKNIGHT" then return "DEATHKNIGHT" end
+    return s
+end
+
+local function BestRoleForPlayer()
+    if not GetTalentTabInfo then return "Unknown" end
+    local maxI, maxV, total, tied = 1, 0, 0, false
+    local names = {}
+    for i=1,3 do
+        local name, _, points = GetTalentTabInfo(i)
+        points = tonumber(points) or 0
+        names[i] = name
+        total = total + points
+        if points > maxV then maxI, maxV, tied = i, points, false elseif points == maxV and points > 0 then tied = true end
+    end
+    if total < 10 or maxV < 6 or tied then return "Unknown" end
+    local spec = names[maxI] or "Unknown"
+    return ROLE_BY_SPEC[spec] or "DPS"
+end
+
+local function BestRoleForDetail(detail)
+    if not detail then return "Unknown" end
+    local vals = { tonumber(detail.talent1) or 0, tonumber(detail.talent2) or 0, tonumber(detail.talent3) or 0 }
+    local maxI, maxV, total, tied = 1, vals[1], vals[1] + vals[2] + vals[3], false
+    for i=2,3 do
+        if vals[i] > maxV then maxI, maxV, tied = i, vals[i], false elseif vals[i] == maxV then tied = true end
+    end
+    if total < 10 or maxV < 6 or tied then return "Unknown" end
+    local names = TREE_NAMES[ClassKey(detail.className)] or {"Tree 1","Tree 2","Tree 3"}
+    local spec = names[maxI] or "Unknown"
+    return ROLE_BY_SPEC[spec] or "DPS"
+end
+
+function PBAM.GetRosterSortMode()
+    return tostring(PBAMConfig.RosterSort or "alpha")
+end
+
+function PBAM.SetRosterSortMode(mode)
+    PBAMConfig.RosterSort = tostring(mode or "alpha")
+    PBAM.RefreshRosterDisplay()
+end
+
+function PBAM.GetRosterRole(entry)
+    if not entry then return "Unknown" end
+    if entry.isPlayer then return BestRoleForPlayer() end
+    local detail = PBAM.Bridge and PBAM.Bridge.Details and PBAM.Bridge.Details[string.lower(tostring(entry.name or ""))] or nil
+    return BestRoleForDetail(detail)
+end
+
+function PBAM.GetRosterSortOptions()
+    return {
+        { value="alpha", label="Alphabetical", tooltip="Show all roster entries alphabetically in one group." },
+        { value="class", label="By Class", tooltip="Group roster by class, then alphabetize names inside each class." },
+        { value="level", label="By Level", tooltip="Group roster by level, then alphabetize names inside each level." },
+        { value="role", label="By Role", tooltip="Group roster by role: Tank, Healer, DPS, Unknown. Names stay alphabetical inside each role." },
+    }
 end
 
 -- ── Bridge Message Handler ──────────────────────────────────
@@ -338,7 +412,7 @@ function PBAM.CreateMainWindow()
 
     PBAM.SearchBox = CreateFrame("EditBox", "PBAMSearchEditBox", searchFrame, "InputBoxTemplate")
     PBAM.SearchBox:SetAutoFocus(false)
-    PBAM.SearchBox:SetWidth(150)
+    PBAM.SearchBox:SetWidth(75)
     PBAM.SearchBox:SetHeight(22)
     PBAM.SearchBox:SetPoint("LEFT", searchLabel, "RIGHT", 4, 0)
     PBAM.SearchBox:SetScript("OnTextChanged", function(self)
@@ -353,9 +427,29 @@ function PBAM.CreateMainWindow()
         end
     end)
 
+    local sortDropdown = PBAM.CreateDropdown(searchFrame, {})
+    sortDropdown:SetPoint("LEFT", PBAM.SearchBox, "RIGHT", -2, -2)
+    UIDropDownMenu_SetWidth(sortDropdown, 78)
+    UIDropDownMenu_SetButtonWidth(sortDropdown, 94)
+
+    local sortValues = {}
+    for _, entry in ipairs(PBAM.GetRosterSortOptions()) do
+        table.insert(sortValues, {
+            value = entry.value,
+            label = entry.label,
+            tooltip = entry.tooltip,
+            onSelect = function(value)
+                PBAM.SetRosterSortMode(value)
+            end,
+        })
+    end
+    sortDropdown:SetValues(sortValues)
+    sortDropdown:SetValue(PBAM.GetRosterSortMode())
+    PBAM.RosterSortDropdown = sortDropdown
+
     local refreshBtn = CreateFrame("Button", nil, searchFrame, "UIPanelButtonTemplate")
-    refreshBtn:SetSize(60, 20)
-    refreshBtn:SetPoint("LEFT", PBAM.SearchBox, "RIGHT", 6, 0)
+    refreshBtn:SetSize(54, 20)
+    refreshBtn:SetPoint("LEFT", sortDropdown, "RIGHT", -2, 0)
     refreshBtn:SetText("Refresh")
     refreshBtn:SetScript("OnClick", function()
         PBAM.RefreshAll()
@@ -580,15 +674,17 @@ function PBAM.RefreshRosterDisplay()
         })
     end
     for _, entry in ipairs(PBAM.Bridge.Roster or {}) do table.insert(roster, entry) end
-    local search = PBAM.SearchBox and PBAM.SearchBox:GetText() or ""
+    local search = string.lower(PBAM.SearchBox and PBAM.SearchBox:GetText() or "")
+    local sortMode = PBAM.GetRosterSortMode()
 
-    -- Clear old entries
     for _, entry in pairs(PBAM.BotListEntries or {}) do
-        if entry.frame and entry.frame:IsShown() then
-            entry.frame:Hide()
-        end
+        if entry.frame and entry.frame:IsShown() then entry.frame:Hide() end
+    end
+    for _, header in ipairs(PBAM.BotListHeaders or {}) do
+        if header and header:IsShown() then header:Hide() end
     end
     PBAM.BotListEntries = {}
+    PBAM.BotListHeaders = {}
 
     local content = PBAM.BotListContent
     if not content then
@@ -596,99 +692,165 @@ function PBAM.RefreshRosterDisplay()
         return
     end
 
-    -- Sort roster, with the logged-in player pinned to the top.
-    table.sort(roster, function(a, b)
-        if a.isPlayer ~= b.isPlayer then return a.isPlayer end
-        return string.lower(a.name or "") < string.lower(b.name or "")
-    end)
-
-    local rowH = 28
-    local rowY = -4
-    local SIDEBAR_W = 250
-
+    local filteredPlayer, filtered = nil, {}
     for _, entry in ipairs(roster) do
         local name = entry.name or ""
         local lower = string.lower(name)
-        local className = entry.className or PBAM.GetBotClassName(name)
+        if search == "" or lower:find(search, 1, true) ~= nil then
+            entry.className = entry.className or PBAM.GetBotClassName(name)
+            entry.level = entry.level or 0
+            entry.role = PBAM.GetRosterRole(entry)
+            if entry.isPlayer then filteredPlayer = entry else table.insert(filtered, entry) end
+        end
+    end
+
+    local groupsByKey, groupOrder = {}, {}
+    local function ensureGroup(key, label, order)
+        local g = groupsByKey[key]
+        if not g then
+            g = { key = key, label = label, order = order or 9999, entries = {} }
+            groupsByKey[key] = g
+            table.insert(groupOrder, g)
+        end
+        return g
+    end
+
+    for _, entry in ipairs(filtered) do
+        local group
+        if sortMode == "class" then
+            local className = tostring(entry.className or "") ~= "" and tostring(entry.className) or "Unknown"
+            group = ensureGroup(string.lower(className), className, 1000)
+        elseif sortMode == "level" then
+            local level = tonumber(entry.level) or 0
+            group = ensureGroup("lvl:" .. tostring(level), "Level " .. tostring(level), level)
+        elseif sortMode == "role" then
+            local role = tostring(entry.role or "Unknown")
+            local normalized = role == "Tank/DPS" and "DPS" or role
+            group = ensureGroup(string.lower(normalized), normalized, ROLE_SORT_ORDER[normalized] or 9999)
+        else
+            group = ensureGroup("alpha", "Alphabetical", 1)
+        end
+        table.insert(group.entries, entry)
+    end
+
+    table.sort(groupOrder, function(a, b)
+        if a.order ~= b.order then return a.order < b.order end
+        return string.lower(a.label or "") < string.lower(b.label or "")
+    end)
+    for _, group in ipairs(groupOrder) do
+        table.sort(group.entries, function(a, b)
+            return string.lower(a.name or "") < string.lower(b.name or "")
+        end)
+    end
+
+    local rowH, headerH = 28, 20
+    local rowY = -4
+    local SIDEBAR_W = 250
+    local renderedRows = 0
+
+    local function RenderRosterRow(entry)
+        local name = entry.name or ""
+        local lower = string.lower(name)
+        local className = entry.className or ""
         local classColor = PBAM.GetClassColor(className)
         local level = entry.level or 0
         local isAlive = entry.alive
 
-        -- Filter check
-        if search == "" or lower:find(string.lower(search)) ~= nil then
-            -- Row frame
-            local rowFrame = CreateFrame("Button", nil, content)
-            rowFrame:SetHeight(rowH)
-            rowFrame:SetWidth(SIDEBAR_W - 20)
-            rowFrame:SetPoint("TOPLEFT", content, "TOPLEFT", 8, rowY)
-            rowFrame:EnableMouse(true)
+        local rowFrame = CreateFrame("Button", nil, content)
+        rowFrame:SetHeight(rowH)
+        rowFrame:SetWidth(SIDEBAR_W - 20)
+        rowFrame:SetPoint("TOPLEFT", content, "TOPLEFT", 8, rowY)
+        rowFrame:EnableMouse(true)
 
-            -- Background
-            local bg = rowFrame:CreateTexture(nil, "BACKGROUND")
-            bg:SetAllPoints()
-            bg:SetTexture(BG_TEXTURE)
-            bg:SetVertexColor(0.12, 0.11, 0.09, 1.0)
-            bg:Show()
-            rowFrame.bg = bg
+        local bg = rowFrame:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints()
+        bg:SetTexture(BG_TEXTURE)
+        bg:SetVertexColor(0.12, 0.11, 0.09, 1.0)
+        bg:Show()
+        rowFrame.bg = bg
 
-            -- Class icon + accent
-            local classIcon = rowFrame:CreateTexture(nil, "OVERLAY")
-            classIcon:SetSize(18, 18)
-            classIcon:SetPoint("LEFT", rowFrame, "LEFT", 6, 0)
-            classIcon:SetTexture(PBAM.GetClassIcon(className))
+        local classIcon = rowFrame:CreateTexture(nil, "OVERLAY")
+        classIcon:SetSize(18, 18)
+        classIcon:SetPoint("LEFT", rowFrame, "LEFT", 6, 0)
+        local iconTexture, left, right, top, bottom = PBAM.GetClassIcon(className)
+        classIcon:SetTexture(iconTexture)
+        if left then classIcon:SetTexCoord(left, right, top, bottom) else classIcon:SetTexCoord(0, 1, 0, 1) end
 
-            local classBar = rowFrame:CreateTexture(nil, "OVERLAY")
-            classBar:SetWidth(3)
-            classBar:SetHeight(rowH - 4)
-            classBar:SetPoint("LEFT", classIcon, "RIGHT", 5, 0)
-            classBar:SetTexture(BG_TEXTURE)
-            if classColor then
-                local r, g, b = tonumber(classColor:sub(1,2), 16)/255, tonumber(classColor:sub(3,4), 16)/255, tonumber(classColor:sub(5,6), 16)/255
-                classBar:SetVertexColor(r or 0.5, g or 0.5, b or 0.5)
-            else
-                classBar:SetVertexColor(0.5, 0.5, 0.5)
+        local classBar = rowFrame:CreateTexture(nil, "OVERLAY")
+        classBar:SetWidth(3)
+        classBar:SetHeight(rowH - 4)
+        classBar:SetPoint("LEFT", classIcon, "RIGHT", 5, 0)
+        classBar:SetTexture(BG_TEXTURE)
+        if classColor then
+            local r, g, b = tonumber(classColor:sub(1,2), 16)/255, tonumber(classColor:sub(3,4), 16)/255, tonumber(classColor:sub(5,6), 16)/255
+            classBar:SetVertexColor(r or 0.5, g or 0.5, b or 0.5)
+        else
+            classBar:SetVertexColor(0.5, 0.5, 0.5)
+        end
+
+        local nameFs = rowFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        nameFs:SetPoint("LEFT", classBar, "RIGHT", 6, 0)
+        nameFs:SetPoint("RIGHT", rowFrame, "RIGHT", -72, 0)
+        nameFs:SetJustifyH("LEFT")
+        nameFs:SetText("|cff" .. (classColor or "ffffff") .. name .. (entry.isPlayer and " |cffd4af37(You)|r" or ""))
+
+        local levelFs = rowFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        levelFs:SetPoint("RIGHT", rowFrame, "RIGHT", -8, 0)
+        levelFs:SetText("Lv." .. level)
+        levelFs:SetTextColor(0.55, 0.55, 0.55, 1.0)
+
+        local dot = rowFrame:CreateTexture(nil, "OVERLAY")
+        dot:SetSize(6, 6)
+        dot:SetPoint("RIGHT", rowFrame, "RIGHT", -40, 1)
+        dot:SetTexture(BG_TEXTURE)
+        dot:SetVertexColor(isAlive and 0.27 or 0.80, 1.0, isAlive and 0.53 or 0.22)
+
+        rowFrame:SetScript("OnMouseDown", function(self, btn)
+            if btn == "LeftButton" then PBAM.SelectBot(name) end
+        end)
+
+        PBAM.BotListEntries[lower] = { frame = rowFrame, bg = bg }
+        rowY = rowY - rowH
+        renderedRows = renderedRows + 1
+    end
+
+    if filteredPlayer then
+        RenderRosterRow(filteredPlayer)
+    end
+
+    for _, group in ipairs(groupOrder) do
+        if #group.entries > 0 then
+            if sortMode ~= "alpha" then
+                local header = CreateFrame("Frame", nil, content)
+                header:SetHeight(headerH)
+                header:SetWidth(SIDEBAR_W - 20)
+                header:SetPoint("TOPLEFT", content, "TOPLEFT", 8, rowY)
+                table.insert(PBAM.BotListHeaders, header)
+
+                local headerBg = header:CreateTexture(nil, "BACKGROUND")
+                headerBg:SetAllPoints()
+                headerBg:SetTexture(BG_TEXTURE)
+                headerBg:SetVertexColor(0.18, 0.15, 0.10, 0.95)
+
+                local headerFs = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                headerFs:SetPoint("LEFT", header, "LEFT", 8, 0)
+                headerFs:SetText(group.label .. ":")
+                headerFs:SetTextColor(0.83, 0.69, 0.22, 1.0)
+
+                rowY = rowY - headerH
+                renderedRows = renderedRows + 1
             end
 
-            -- Name
-            local nameFs = rowFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-            nameFs:SetPoint("LEFT", classBar, "RIGHT", 6, 0)
-            nameFs:SetPoint("RIGHT", rowFrame, "RIGHT", -72, 0)
-            nameFs:SetJustifyH("LEFT")
-            nameFs:SetText("|cff" .. (classColor or "ffffff") .. name .. (entry.isPlayer and " |cffd4af37(You)|r" or ""))
-
-            -- Level
-            local levelFs = rowFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            levelFs:SetPoint("RIGHT", rowFrame, "RIGHT", -8, 0)
-            levelFs:SetText("Lv." .. level)
-            levelFs:SetTextColor(0.55, 0.55, 0.55, 1.0)
-
-            -- Status dot
-            local dot = rowFrame:CreateTexture(nil, "OVERLAY")
-            dot:SetSize(6, 6)
-            dot:SetPoint("RIGHT", rowFrame, "RIGHT", -40, 1)
-            dot:SetTexture(BG_TEXTURE)
-            dot:SetVertexColor(isAlive and 0.27 or 0.80, 1.0, isAlive and 0.53 or 0.22)
-
-            -- Click handler
-            rowFrame:SetScript("OnMouseDown", function(self, btn)
-                if btn == "LeftButton" then
-                    PBAM.SelectBot(name)
-                end
-            end)
-
-            PBAM.BotListEntries = PBAM.BotListEntries or {}
-            PBAM.BotListEntries[lower] = { frame = rowFrame, bg = bg }
-            rowY = rowY - rowH
+            for _, entry in ipairs(group.entries) do
+                RenderRosterRow(entry)
+            end
         end
     end
 
-    -- Set content height
-    local rowCount = 0
-    for _ in pairs(PBAM.BotListEntries or {}) do rowCount = rowCount + 1 end
-    local totalHeight = math.max(50, 8 + (rowCount * rowH) + 8)
+    local totalHeight = math.max(50, -rowY + 8)
     content:SetHeight(totalHeight)
     PBAM.BotListScroll:SetScrollChild(content)
-
+    if PBAM.RosterSortDropdown then PBAM.RosterSortDropdown:SetValue(sortMode) end
     PBAM.UpdateConnectionDot()
 end
 
@@ -715,15 +877,17 @@ end
 
 
 function PBAM.GetClassIcon(className)
-    local key = string.lower(tostring(className or "unknown")):gsub("%s+", "")
-    local map = {
-        warrior="Interface\Icons\ClassIcon_Warrior", paladin="Interface\Icons\ClassIcon_Paladin",
-        hunter="Interface\Icons\ClassIcon_Hunter", rogue="Interface\Icons\ClassIcon_Rogue",
-        priest="Interface\Icons\ClassIcon_Priest", deathknight="Interface\Icons\ClassIcon_DeathKnight",
-        shaman="Interface\Icons\ClassIcon_Shaman", mage="Interface\Icons\ClassIcon_Mage",
-        warlock="Interface\Icons\ClassIcon_Warlock", druid="Interface\Icons\ClassIcon_Druid",
+    local tokenMap = {
+        warrior="WARRIOR", paladin="PALADIN", hunter="HUNTER", rogue="ROGUE", priest="PRIEST",
+        deathknight="DEATHKNIGHT", shaman="SHAMAN", mage="MAGE", warlock="WARLOCK", druid="DRUID",
     }
-    return map[key] or "Interface\Icons\INV_Misc_QuestionMark"
+    local key = string.lower(tostring(className or "unknown")):gsub("%s+", "")
+    local token = tokenMap[key] or string.upper(tostring(className or "unknown")):gsub("%s+", "")
+    local coords = CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[token]
+    if coords then
+        return "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes", coords[1], coords[2], coords[3], coords[4]
+    end
+    return "Interface\\Icons\\INV_Misc_QuestionMark"
 end
 
 function PBAM.SameUnitName(unit, botName)
