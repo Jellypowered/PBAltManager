@@ -64,6 +64,13 @@ PBAM.RegisterTab("Equipment", "Equipment", 7, function(panel)
     PBAM.ApplyBackdrop(header,0.55); PBAM.CreateSectionHeader(header,"Equipment",-10,13)
     local hint=header:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); hint:SetPoint("LEFT",header,"LEFT",18,-40); hint:SetTextColor(0.72,0.72,0.72,1)
     local refreshBtn=CreateFrame("Button", nil, header, "UIPanelButtonTemplate"); refreshBtn:SetSize(88,22); refreshBtn:SetPoint("RIGHT",header,"RIGHT",-12,-6); refreshBtn:SetText("Refresh")
+    refreshBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Refresh Equipment", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("Request fresh equipment and outfit data for the selected bot.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    refreshBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     panel.StatusText = hint
 
     -- This tab used to put the paperdoll inside a ScrollFrame. WotLK's

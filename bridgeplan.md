@@ -122,6 +122,45 @@ RESPONSE: ITEM_TRADE~bot~token~OK|ERR~reason~moved
 - Return structured reasons: `INVALID_TARGET`, `OUT_OF_RANGE`, `MISSING_ITEM`, `TRADE_BUSY`, `COUNT_UNAVAILABLE`
 - Include `moved` count in the response
 
+### Later note: equipped bag / container data
+
+PBAM currently receives only aggregate inventory capacity:
+
+```text
+INV_SUMMARY~BotName~Token~gold~silver~copper~bagUsed~bagTotal
+```
+
+This is enough for free-slot sorting, but not enough to show **which bags are equipped** or to make decisions based on bag type/capacity. Future bridge work should expose equipped bag/container slots.
+
+### Proposed inventory bag payload
+
+```
+INV_BAG~BotName~Token~bagIndex~bagItemId~bagLink~numSlots~bagType
+```
+
+**`bagIndex` values:** `0` = backpack, `1-4` = equipped bag slots.
+
+**`bagType` examples:** `NORMAL`, `QUIVER`, `AMMO_POUCH`, `SOUL_SHARD`, `HERB`, `ENCHANTING`, `MINING`, `ENGINEERING`, or empty/unknown.
+
+### Required behavior
+
+- Include equipped bag item ID/link/name when available
+- Include each bag/container slot capacity
+- Include container type when distinguishable, especially quiver/ammo pouch
+- Store client-side under `Bridge.Inventory[key].bags` without changing existing `bagUsed`/`bagTotal` behavior
+- Keep `INV_SUMMARY` backwards-compatible for current PBAM versions
+
+### Later note: ammo container awareness
+
+A future inventory/buy enhancement should support hunter ammo refill that is aware of:
+
+- equipped ranged weapon type (bow/crossbow vs gun)
+- equipped quiver or ammo pouch
+- quiver/ammo pouch capacity
+- current ammo count already carried by the bot
+
+The current PBAM Buy Ammo design can buy level-appropriate arrows or bullets, but exact quiver/pouch filling should wait until the bridge or equipment snapshot exposes enough structured slot/container data to do this reliably.
+
 ---
 
 ## 5. Profession Target-Item Craft / Enhancement
@@ -203,3 +242,9 @@ RESPONSE: TALENT_APPLY~bot~token~OK|ERR~reason~summary
 - Response format is consistent: `OK` or `ERR` followed by a reason string and optional additional data
 - Bridge requests should trigger appropriate client-side refreshes (inventory, spells, quests) automatically where relevant
 - The bridge module (`mod-multibot-bridge`) should validate all inputs before forwarding to mod-playerbots commands
+- **Bulk data endpoints are now desirable for roster-scale sorts.** Per-bot requests work, but tab-level sorting like free bag space or profession skill causes many individual requests in large raids.
+- Proposed bulk read examples:
+  - `GET~INVENTORY_BULK~token` → repeated per-bot inventory summary rows (`bagUsed`, `bagTotal`, gold optional) + end token
+  - `GET~BOT_SKILLS_BULK~token` → repeated per-bot primary/secondary skill summary rows + end token
+- These bulk endpoints only need summary fields for sidebar sorting; they do **not** need full item lists or full profession recipe payloads.
+- Goal: let PBAltManager populate roster sort data for 25/40-man groups without burst-requesting one endpoint call per bot.

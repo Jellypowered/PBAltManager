@@ -44,6 +44,10 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
     local batchScanExpected = 0
     local batchScanCompleted = 0
     local batchScanPending = {}
+    local batchScanQueue = {}
+    local batchScanPendingSince = {}
+    local BATCH_SCAN_REQUEST_TTL = 5.0
+    local BATCH_SCAN_MAX_INFLIGHT = 4
     
     -- Forward declare helpers/locals used by callbacks
     local UpdateTrainAllButtonState
@@ -52,6 +56,7 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
     local LogStatus
     local Row
     local content
+    local KickBatchScanQueue
     
     PBAM.Bridge.RegisterCallback("TrainerUpdated", function(botName)
         -- Guard: botName must be a valid string
@@ -61,6 +66,7 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
             local key = string.lower(botName)
             local trainer = PBAM.Bridge.Trainer and PBAM.Bridge.Trainer[key]
             if trainer then trainerDataByBot[botName] = trainer end
+            batchScanPendingSince[key] = nil
             if batchScanPending[botName] then
                 batchScanPending[botName] = nil
                 batchScanCompleted = batchScanCompleted + 1
@@ -73,6 +79,7 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
                     content:SetHeight(60)
                 end
                 if batchScanCompleted >= batchScanExpected and RenderBatchSummary then RenderBatchSummary() end
+                if KickBatchScanQueue then KickBatchScanQueue() end
             end
             if UpdateTrainAllButtonState then UpdateTrainAllButtonState() end
         end
@@ -98,22 +105,8 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
     emptyFs:SetPoint("CENTER", panel, "CENTER"); emptyFs:SetText("Select a bot to view trainer spells"); emptyFs:SetTextColor(0.55,0.55,0.55,1)
     
     -- After() helper for delayed execution (token-aware rate limiting)
-    local afterFrame, afterJobs
     local function After(delay, func)
-        if C_Timer and C_Timer.After then return C_Timer.After(delay, func) end
-        if PBAM and PBAM.After then return PBAM.After(delay, func) end
-        if not afterFrame then
-            afterJobs = {}
-            afterFrame = CreateFrame("Frame")
-            afterFrame:SetScript("OnUpdate", function(_, elapsed)
-                for i = #afterJobs, 1, -1 do
-                    local job = afterJobs[i]
-                    job.t = job.t - elapsed
-                    if job.t <= 0 then table.remove(afterJobs, i); job.f() end
-                end
-            end)
-        end
-        table.insert(afterJobs, { t = tonumber(delay) or 0, f = func })
+        return PBAM.After(delay, func)
     end
     
     LogStatus = function(msg, r, g, b)
@@ -132,17 +125,40 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
     refreshBtn:SetSize(88, 22)
     refreshBtn:SetPoint("RIGHT", header, "RIGHT", -18, -2)
     refreshBtn:SetText("Refresh")
+    refreshBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Refresh Trainer Data", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine(batchModeEnabled and "Scan trainer data for all roster bots." or "Request fresh trainer data for the selected bot.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    refreshBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     
     -- Train All button (leftmost of the button group)
     local trainAllBtn = CreateFrame("Button", nil, header, "UIPanelButtonTemplate")
     trainAllBtn:SetSize(88, 22)
     trainAllBtn:SetPoint("RIGHT", header, "RIGHT", -18, -26) --button is 22 high so 4px gap
     trainAllBtn:SetText("Train All")
+    trainAllBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Train All Spells", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine(batchModeEnabled and "Train all trainable spells for all roster bots." or "Teach the selected bot all trainable spells.", 0.8, 0.8, 0.8, true)
+        GameTooltip:AddLine("Requires sufficient gold for training costs.", 0.6, 0.6, 0.6, true)
+        GameTooltip:Show()
+    end)
+    trainAllBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     
     -- Batch Mode checkbox
     local batchCheckbox = CreateFrame("CheckButton", nil, header, "UICheckButtonTemplate")
     batchCheckbox:SetSize(24, 24)
     batchCheckbox:SetPoint("RIGHT", trainAllBtn, "RIGHT", -96, 0)
+    batchCheckbox:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Batch Mode", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("Enable batch operations for all roster bots.", 0.8, 0.8, 0.8, true)
+        GameTooltip:AddLine("When enabled, Refresh scans all bots and Train All trains everyone.", 0.6, 0.6, 0.6, true)
+        GameTooltip:Show()
+    end)
+    batchCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
     
     -- Batch Mode label
     local batchLabel = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -238,20 +254,35 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
         if panel.OnBotSelect then panel.OnBotSelect(botName) end
     end
     
+    KickBatchScanQueue = function()
+        if not batchModeEnabled or not PBAM.RunThrottledFanout then return end
+        PBAM.RunThrottledFanout(batchScanQueue, batchScanPending, batchScanPendingSince, PBAM.Bridge.RequestTrainer, {
+            ttl = BATCH_SCAN_REQUEST_TTL,
+            maxInflight = BATCH_SCAN_MAX_INFLIGHT,
+            onBeforeRequest = function(name, key)
+                PBAM.Bridge.Trainer[key] = nil
+            end,
+            onTimeout = function()
+                if batchModeEnabled and KickBatchScanQueue then KickBatchScanQueue() end
+            end,
+        })
+    end
+
     StartBatchScan = function()
         local roster = PBAM.Bridge.Roster or {}
         trainerDataByBot = {}
         batchScanExpected = 0
         batchScanCompleted = 0
         batchScanPending = {}
+        batchScanQueue = {}
+        batchScanPendingSince = {}
         
         for _, bot in ipairs(roster) do
             if bot and bot.name and bot.name ~= "" then
                 local name = bot.name
                 batchScanExpected = batchScanExpected + 1
                 batchScanPending[name] = true
-                PBAM.Bridge.Trainer[string.lower(name)] = nil
-                PBAM.Bridge.RequestTrainer(name)
+                table.insert(batchScanQueue, name)
             end
         end
         
@@ -269,6 +300,7 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
         content:SetHeight(60)
         LogStatus(string.format("Scanning trainer data... 0/%d", batchScanExpected), 0.95, 0.8, 0.25)
         if UpdateTrainAllButtonState then UpdateTrainAllButtonState() end
+        KickBatchScanQueue()
     end
     
     -- Update button state when bot is selected
@@ -348,6 +380,9 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
             -- Disable batch mode
             batchModeEnabled = false
             trainerDataByBot = {}
+            batchScanQueue = {}
+            batchScanPending = {}
+            batchScanPendingSince = {}
             LogStatus("Batch mode disabled.", 0.75, 0.75, 0.75)
         end
         

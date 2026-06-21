@@ -54,6 +54,9 @@ It brings the most useful day-to-day bot management tools into one window with a
 - All planned implementation phases are complete. See [Roadmap](https://github.com/Jellypowered/PBAltManager/wiki/Roadmap).
 - Some actions still use controlled legacy fallback until bridge endpoints are expanded (see [bridgeplan.md](bridgeplan.md)).
 - The logged-in player is supported primarily through the Roster tab; bot-only tabs may hide when your own character is selected.
+- The clear-selection button now performs a full PBAltManager UI reset to get back to a fresh-start style state without reloading the whole WoW UI, followed by a delayed full refresh after bridge data has time to return.
+- Bot quests in the Roster tab are rendered as clickable quest links when bridge quest IDs are available.
+- Recent optimization work reduces client hangs by throttling duplicate bridge requests and batching roster refreshes. Some roster/sidebar sort data may appear slightly slower during initial loading, but the client should stay more responsive.
 
 ## Documentation
 

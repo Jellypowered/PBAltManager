@@ -45,6 +45,7 @@ Major completed outcomes:
 8. Phase 7 — bridge enhancement proposal documentation ✅
 9. Phase 9 — code cleanup and contributor comments ✅
 10. Phase 10 — wiki / documentation refresh ✅
+11. Phase 11 — responsiveness optimization pass ✅
 
 ---
 
@@ -164,6 +165,23 @@ Completed:
 - troubleshooting and limitations expanded
 - credits page updated
 - README updated with prominent wiki link and brief overview format
+
+## Phase 11 — Responsiveness optimization pass
+
+Completed:
+
+- duplicate in-flight bridge requests throttled for inventory, bank, guild bank, skills, and reputations
+- in-flight request state clears when real bridge completion callbacks arrive
+- roster/sidebar refreshes are batched through `PBAM.QueueRosterRefresh()` to reduce UI churn during burst updates
+- `/pbam refresh` / Refresh All is lightly throttled to avoid accidental rapid full refresh spam
+- stale/non-function callback handlers are cleaned up safely inside `Bridge.FireCallback()` to reduce rare CB error fallout
+- missing button tooltips were added across the main window and tabs
+
+User-facing note:
+
+- Some data, especially roster sort helpers such as free bag space or profession data, may populate a little more gradually during first load.
+- This is intentional: PBAltManager now favors fewer client hangs and a more responsive UI over burst-requesting everything at once.
+- Existing cached bridge data remains visible until a state-changing action or bridge callback refreshes it.
 
 ---
 

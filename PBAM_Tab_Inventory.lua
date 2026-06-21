@@ -55,22 +55,8 @@ local function ItemIcon(item)
     return "Interface\\Icons\\INV_Misc_QuestionMark"
 end
 
-local afterFrame, afterJobs
 local function After(delay, func)
-    if C_Timer and C_Timer.After then return C_Timer.After(delay, func) end
-    if PBAM and PBAM.After then return PBAM.After(delay, func) end
-    if not afterFrame then
-        afterJobs = {}
-        afterFrame = CreateFrame("Frame")
-        afterFrame:SetScript("OnUpdate", function(_, elapsed)
-            for i = #afterJobs, 1, -1 do
-                local job = afterJobs[i]
-                job.t = job.t - elapsed
-                if job.t <= 0 then table.remove(afterJobs, i); job.f() end
-            end
-        end)
-    end
-    table.insert(afterJobs, { t = tonumber(delay) or 0, f = func })
+    return PBAM.After(delay, func)
 end
 
 local function LogStatus(fs, msg, r, g, b)
@@ -125,12 +111,12 @@ local function GetCurrentMerchantTargetName()
     if UnitIsPlayer("target") then
         return nil
     end
-    
+
     local name = UnitName("target")
     if not name or name == "" or name == "Unknown Entity" then
         return nil
     end
-    
+
     return name
 end
 
@@ -146,6 +132,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     local MARGIN, ROW_H = 12, 30
     local rows, targetRows = {}, {}
     local showingBank = false
+    local buyMode = false
     local equipMode = false
     local destroyMode = false
     local tradeMode = false
@@ -154,11 +141,15 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     local selectedTradeItem = nil
     local tradeTarget = nil
     local tradeInitiatedAt = 0  -- timestamp when InitiateTrade was called
+    local lastTabOpenInventoryRequest = 0
+
 
     -- Forward declarations for callback helpers/UI objects. Lua local scope starts
     -- at the declaration, so callbacks defined before these helpers need this.
     local titleFs, slotsFs, goldFs, content
     local ClearRows, HideTargetMenu, Row, UpdateRowHighlights
+    local RenderMerchantRows
+    local RefreshMerchantView
 
     -- InventoryUpdated / BankUpdated: only update the UI, do NOT re-trigger OnBotSelect.
     -- Re-triggering creates a cascade (callback → OnBotSelect → RequestInventoryRefresh)
@@ -169,31 +160,64 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         goldFs:SetText("Gold: " .. MoneyText(inv.goldCopper) .. (bank and bank.goldCopper and ("   Bank: " .. MoneyText(bank.goldCopper)) or ""))
         slotsFs:SetText(string.format("Bags: %d / %d", inv.bagUsed or 0, inv.bagTotal or 0))
         if not inv.items or #inv.items == 0 then
-            local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Box_01"); r.text:SetText("No inventory items returned."); content:SetHeight(60); return false
+            local r = Row(1); r.item=nil; r.itemText=nil; r.merchantItem=nil; r.icon:SetTexture("Interface\\Icons\\INV_Box_01"); r.text:SetText("No inventory items returned."); content:SetHeight(60); return false
         end
-        for i, item in ipairs(inv.items) do local r = Row(i); r.item=item; r.itemText=ItemText(item); r.icon:SetTexture(ItemIcon(item)); r.text:SetText(ItemText(item)) end
+        for i, item in ipairs(inv.items) do local r = Row(i); r.item=item; r.itemText=ItemText(item); r.merchantItem=nil; r.icon:SetTexture(ItemIcon(item)); r.text:SetText(ItemText(item)) end
         UpdateRowHighlights(); content:SetHeight(20 + #inv.items * ROW_H)
         return true
     end
+    local function BuildMerchantItems()
+        local items = {}
+        local count = GetMerchantNumItems and GetMerchantNumItems() or 0
+        for i = 1, count do
+            local name, texture, price, quantity, numAvailable, isUsable, extendedCost = GetMerchantItemInfo(i)
+            local link = GetMerchantItemLink and GetMerchantItemLink(i) or nil
+            local itemId = link and tonumber(tostring(link):match("item:(%d+)")) or 0
+            local _, _, quality, level, minLevel, itemType, subType, stackCount, equipLoc = GetItemInfo(itemId)
+            table.insert(items, {
+                index = i, itemId = itemId, name = name or ("Merchant Item #" .. tostring(i)), icon = texture,
+                price = tonumber(price) or 0, quantity = tonumber(quantity) or 1, available = tonumber(numAvailable) or -1,
+                usable = isUsable, extendedCost = extendedCost, link = link, level = tonumber(level) or 0,
+                minLevel = tonumber(minLevel) or 0, itemType = itemType, subType = subType, stackCount = tonumber(stackCount) or tonumber(quantity) or 1,
+                equipLoc = equipLoc,
+            })
+        end
+        return items
+    end
+
+    local function IsMerchantOpen()
+        return (MerchantFrame and MerchantFrame:IsShown()) or ((GetMerchantNumItems and GetMerchantNumItems() or 0) > 0)
+    end
+
+    local function BuyReason(reason)
+        local map = {
+            OK = "Purchase completed.", INVALID_ITEM = "That vendor item is not valid.", NOT_VENDOR = "No vendor is selected.",
+            TOO_EXPENSIVE = "Bot cannot afford that purchase.", OUT_OF_STOCK = "That item is sold out.",
+            EXTENDED_COST = "That item needs alternate currency or tokens.",
+        }
+        reason = tostring(reason or "")
+        return map[reason] or (reason ~= "" and reason or "Purchase failed.")
+    end
+
     -- Render bank rows from bridge data.
     local function RenderBankRows(bank)
         if not bank then return false end
         if bank.error and bank.error ~= "" then
-            local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_Coin_02"); r.text:SetText("Bank unavailable: " .. bank.error)
+            local r = Row(1); r.item=nil; r.itemText=nil; r.merchantItem=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_Coin_02"); r.text:SetText("Bank unavailable: " .. bank.error)
             content:SetHeight(60); return false
         end
         if not bank.items or #bank.items == 0 then
-            local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Box_02"); r.text:SetText("Nothing in this bot's bank.")
+            local r = Row(1); r.item=nil; r.itemText=nil; r.merchantItem=nil; r.icon:SetTexture("Interface\\Icons\\INV_Box_02"); r.text:SetText("Nothing in this bot's bank.")
             content:SetHeight(60); return false
         end
-        for i, item in ipairs(bank.items) do local r = Row(i); r.item=item; r.itemText=ItemText(item); r.icon:SetTexture(ItemIcon(item)); r.text:SetText(ItemText(item)) end
+        for i, item in ipairs(bank.items) do local r = Row(i); r.item=item; r.itemText=ItemText(item); r.merchantItem=nil; r.icon:SetTexture(ItemIcon(item)); r.text:SetText(ItemText(item)) end
         UpdateRowHighlights(); content:SetHeight(20 + #bank.items * ROW_H)
         return true
     end
     -- InventoryUpdated / BankUpdated: only update the UI, do NOT re-trigger OnBotSelect.
     -- Re-triggering creates a cascade (callback → OnBotSelect → RequestInventoryRefresh)
     -- that overlaps with the initial request cycle, causing token collisions and lost data.
-    PBAM.Bridge.RegisterCallback("InventoryUpdated", function(botName)
+    PBAM.Bridge.RegisterCallback("InventoryUpdated", function(botName)  
         if botName ~= PBAM.SelectedBot or PBAM.CurrentTab ~= "Inventory" then return end
         local key = string.lower(botName)
         local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
@@ -220,7 +244,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             end
         end
     end)
-    PBAM.Bridge.RegisterCallback("BankUpdated", function(botName)
+    PBAM.Bridge.RegisterCallback("BankUpdated", function(botName)  
         if botName ~= PBAM.SelectedBot or PBAM.CurrentTab ~= "Inventory" then return end
         local key = string.lower(botName)
         local bank = PBAM.Bridge.Bank and PBAM.Bridge.Bank[key]
@@ -236,7 +260,17 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         end
     end)
     PBAM.Bridge.RegisterCallback("InventoryItemActionResult", function(result)
-        if not result or result.botName ~= PBAM.SelectedBot or PBAM.CurrentTab ~= "Inventory" then return end
+        if not result or PBAM.CurrentTab ~= "Inventory" then return end
+        if result.action == "BUY_ITEM" then
+            local ok = result.result == "OK"
+            LogStatus(panel.StatusText, (ok and BuyReason("OK") or BuyReason(result.reason)) .. " [" .. tostring(result.botName or "bot") .. "]", ok and 0.35 or 1, ok and 0.9 or 0.35, ok and 0.45 or 0.25)
+            if buyMode and RefreshMerchantView then After(0.20, RefreshMerchantView) end
+            if result.botName and result.botName == PBAM.SelectedBot and not buyMode then
+                After(0.55, function() PBAM.Bridge.RequestInventory(result.botName) end)
+            end
+            return
+        end
+        if result.botName ~= PBAM.SelectedBot then return end
         local ok = result.result == "OK"
         LogStatus(panel.StatusText, string.format("%s %s for item %s%s", tostring(result.action or "Item action"), ok and "completed" or "failed", tostring(result.itemId or "?"), ok and "" or (": " .. tostring(result.reason or "unknown"))), ok and 0.35 or 1, ok and 0.9 or 0.35, ok and 0.45 or 0.25)
         if ok and PBAM.SelectedBot then
@@ -244,7 +278,6 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             if showingBank then After(0.70, function() PBAM.Bridge.RequestBank(PBAM.SelectedBot) end) end
         end
     end)
-
     local emptyFs = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     emptyFs:SetPoint("CENTER", panel, "CENTER", EMPTY_MESSAGE_X_OFFSET, EMPTY_MESSAGE_Y_OFFSET)
     emptyFs:SetText("Select a bot to view inventory")
@@ -279,8 +312,32 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         b:SetSize(88, 24); b:SetPoint("RIGHT", controlsFrame, "RIGHT", x, 0); b:SetText(text); return b
     end
     local refreshBtn = Button("Refresh", -14)
+    refreshBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Refresh Inventory", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("Request fresh inventory data from the selected bot.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    refreshBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
     local bankBtn = Button("Bank", -108)
+    bankBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("View Bank", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("Switch to bank view to see the bot's bank contents.", 0.8, 0.8, 0.8, true)
+        GameTooltip:AddLine("Click bank items to request withdrawal via bridge.", 0.6, 0.6, 0.6, true)
+        GameTooltip:Show()
+    end)
+    bankBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
     local invBtn = Button("Inventory", -202)
+    invBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("View Inventory", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("Switch to inventory view to see the bot's bag contents.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    invBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     local body = CreateFrame("Frame", nil, panel)
     body:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -8)
@@ -327,6 +384,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     local equipCheck = CheckButtonLeft("Equip Mode", -24)
     local destroyCheck = CheckButtonRight("Destroy Mode", -24)
     local tradeCheck = CheckButtonLeft("Trade Mode", -48)
+    local buyCheck = CheckButtonRight("Buy Mode", -48)
     local sellCheck = CheckButtonLeft("Sell Mode", -72)
     local sellBatch = CheckButtonRight("Batch Mode", -72)
 
@@ -345,8 +403,47 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         b:SetText(text)
         return b
     end
+    local function RightActionButton(text, y)
+        local b = CreateFrame("Button", nil, actionPanel, "UIPanelButtonTemplate")
+        b:SetSize(120, 24); b:SetPoint("TOPRIGHT", actionPanel, "TOPRIGHT", -32, y)
+        b:SetText(text)
+        return b
+    end
     local sellGreysBtn = SellButton("Sell Greys", -190)
+    sellGreysBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Sell Grey Items", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("Sell all grey-quality items from the bot's inventory", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    sellGreysBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
     local sellVendorBtn = SellButton("Sell Vendorable", -224)
+    sellVendorBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Sell Vendorable Items", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("Sell all items that can be sold to vendors", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    sellVendorBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    local repairAllBtn = RightActionButton("Repair All", -190)
+    repairAllBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Repair All Items", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("Repair all equipped items for the selected bot", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    repairAllBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    local buyAmmoBtn = SellButton("Buy Ammo", -258)
+    buyAmmoBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Buy Ammo", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("Buy arrows/bullets for hunter bots from the merchant", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    buyAmmoBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     local targetMenu = CreateFrame("Frame", nil, panel)
     targetMenu:SetFrameStrata("DIALOG")
@@ -371,6 +468,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     statusFs:SetTextColor(0.7, 0.7, 0.7, 1)
     statusFs:SetText("Sell Mode uses your current target like Trainer. Target a vendor NPC first.")
     panel.StatusText = statusFs
+    local isBatchSelling = false
 
     local hintFs = actionPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     hintFs:SetPoint("BOTTOMLEFT", actionPanel, "BOTTOMLEFT", 18, 18)
@@ -387,10 +485,62 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         PBAM.SetButtonEnabled(invBtn, hasBot, "Select a bot to view inventory.")
         PBAM.SetButtonEnabled(targetButton, hasBot and tradeMode, tradeMode and "No trade target is available right now." or "Enable Trade Mode to choose a trade target.")
         equipCheck:SetEnabled(hasBot)
+        equipCheck:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Equip Mode", 1, 0.82, 0.22, true)
+            GameTooltip:AddLine("Left-click: Equip item in main/off hand", 0.8, 0.8, 0.8, true)
+            GameTooltip:AddLine("Right-click: Equip item in off/main hand", 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end)
+        equipCheck:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
         tradeCheck:SetEnabled(hasBot)
+        tradeCheck:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Trade Mode", 1, 0.82, 0.22, true)
+            GameTooltip:AddLine("Enable trading with the selected bot", 0.8, 0.8, 0.8, true)
+            GameTooltip:AddLine("Click items to send them to the bot's trade window", 0.6, 0.6, 0.6, true)
+            GameTooltip:Show()
+        end)
+        tradeCheck:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+        buyCheck:SetEnabled(hasBot)
+        buyCheck:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Buy Mode", 1, 0.82, 0.22, true)
+            GameTooltip:AddLine("Left-click: Buy 1 item from merchant", 0.8, 0.8, 0.8, true)
+            GameTooltip:AddLine("Right-click: Buy full stack from merchant", 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end)
+        buyCheck:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
         sellCheck:SetEnabled(hasBot)
+        sellCheck:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Sell Mode", 1, 0.82, 0.22, true)
+            GameTooltip:AddLine("Click items to sell them to the current vendor target", 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end)
+        sellCheck:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
         sellBatch:SetEnabled(hasBot)
+        sellBatch:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Batch Mode", 1, 0.82, 0.22, true)
+            GameTooltip:AddLine("Sell entire stacks instead of single items", 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end)
+        sellBatch:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
         destroyCheck:SetEnabled(hasBot)
+        destroyCheck:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Destroy Mode", 1, 0.82, 0.22, true)
+            GameTooltip:AddLine("Click items to destroy them permanently", 1, 0.3, 0.3, true)
+            GameTooltip:AddLine("WARNING: This cannot be undone!", 1, 0, 0, true)
+            GameTooltip:Show()
+        end)
+        destroyCheck:SetScript("OnLeave", function() GameTooltip:Hide() end)
     end
 
     local function SetTargetText()
@@ -460,6 +610,238 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         if targetMenu:IsShown() then ShowTargetMenu() end
     end
 
+    local function BotClassName(botName)
+        local lower = string.lower(tostring(botName or ""))
+        local detail = PBAM.Bridge.Details and PBAM.Bridge.Details[lower]
+        if detail and detail.className and detail.className ~= "" then return detail.className end
+        local roster = PBAM.GetRosterEntry and PBAM.GetRosterEntry(botName)
+        return roster and roster.className or ""
+    end
+
+    local function BotLevel(botName)
+        local lower = string.lower(tostring(botName or ""))
+        return (PBAM.Bridge.Stats and PBAM.Bridge.Stats[lower] and PBAM.Bridge.Stats[lower].level)
+            or (PBAM.Bridge.Details and PBAM.Bridge.Details[lower] and PBAM.Bridge.Details[lower].level)
+            or (PBAM.GetRosterEntry and PBAM.GetRosterEntry(botName) and PBAM.GetRosterEntry(botName).level)
+            or 0
+    end
+
+    local function BestVendorAmmo(kind, botLevel)
+        local best = nil
+        for _, item in ipairs(BuildMerchantItems()) do
+            local subType = string.lower(tostring(item.subType or ""))
+            local matches = (kind == "arrow" and subType == "arrow") or (kind == "bullet" and (subType == "bullet" or subType == "bullets"))
+            if matches and not item.extendedCost and item.itemId and item.itemId > 0 then
+                local minLevel = tonumber(item.minLevel) or 0
+                if minLevel <= (tonumber(botLevel) or 0) then
+                    if not best or minLevel > (tonumber(best.minLevel) or 0) or ((minLevel == (tonumber(best.minLevel) or 0)) and (tonumber(item.itemId) > tonumber(best.itemId))) then
+                        best = item
+                    end
+                end
+            end
+        end
+        return best
+    end
+
+    local function BuildAmmoAction(item)
+        if not item then return nil end
+        return {
+            kind = "buyammo",
+            itemId = item.itemId,
+            count = math.max(1, tonumber(item.stackCount) or tonumber(item.quantity) or 1) * 4,
+            itemName = item.name,
+            itemLink = item.link or item.name,
+        }
+    end
+
+    local function DetermineAmmoPurchase(botName)
+        if not IsMerchantOpen() then return nil, "Open a vendor window first." end
+        local botLevel = BotLevel(botName)
+        local unit = PBAM.FindBotUnit and PBAM.FindBotUnit(botName) or nil
+        local rangedLink = unit and GetInventoryItemLink and GetInventoryItemLink(unit, 18) or nil
+        local ammoKind = nil
+        if rangedLink and GetItemInfo then
+            local _, _, _, _, _, _, rangedSubType = GetItemInfo(rangedLink)
+            local sub = string.lower(tostring(rangedSubType or ""))
+            if sub:find("bow", 1, true) then ammoKind = "arrow"
+            elseif sub:find("gun", 1, true) then ammoKind = "bullet" end
+        end
+
+        if ammoKind then
+            local best = BestVendorAmmo(ammoKind, botLevel)
+            if not best then return nil, "No level-appropriate ammo found." end
+            return BuildAmmoAction(best)
+        end
+
+        -- Fallback when the bot's ranged weapon cannot be inspected. This happens
+        -- often for roster/batch actions because not every bot has an inspectable unit.
+        local className = string.lower(tostring(BotClassName(botName) or "")):gsub("%s+", "")
+        if className ~= "hunter" then return nil, "Could not inspect ranged weapon." end
+
+        local arrow = BestVendorAmmo("arrow", botLevel)
+        local bullet = BestVendorAmmo("bullet", botLevel)
+        if arrow and not bullet then return BuildAmmoAction(arrow) end
+        if bullet and not arrow then return BuildAmmoAction(bullet) end
+        if arrow and bullet then
+            return { kind = "buyammo_multi", actions = { BuildAmmoAction(arrow), BuildAmmoAction(bullet) }, itemName = "arrows and bullets" }
+        end
+        return nil, "No level-appropriate ammo found."
+    end
+
+    local function StartBatchAction(label, buildAction, validator)
+        if isBatchSelling then return end
+        if validator then
+            local ok, msg = validator()
+            if not ok then LogStatus(statusFs, msg or "Cannot start batch action.", 1, 0.35, 0.25); return end
+        end
+        local botsToProcess = {}
+        for _, bot in ipairs(PBAM.Bridge.Roster or {}) do
+            if bot and bot.name and bot.name ~= "" then
+                local action, reason = buildAction(bot.name)
+                if action then table.insert(botsToProcess, { name = bot.name, action = action }) end
+            end
+        end
+        if #botsToProcess == 0 then
+            LogStatus(statusFs, "No eligible bots in roster for " .. label .. ".", 1, 0.6, 0.4)
+            return
+        end
+        table.sort(botsToProcess, function(a, b) return string.lower(a.name) < string.lower(b.name) end)
+        isBatchSelling = true
+        local totalBots = #botsToProcess
+        local remainingTime = totalBots * 1.5
+        local processed = 0
+        local function UpdateCountdown()
+            statusFs:SetText(string.format("|cff40ff40%s: %d/%d bots, ~%.1fs remaining|r", label, processed, totalBots, math.max(0, remainingTime)))
+        end
+        UpdateCountdown()
+        local countdownUpdate
+        countdownUpdate = function()
+            if not isBatchSelling then return end
+            remainingTime = remainingTime - 0.5
+            if remainingTime > 0 then UpdateCountdown(); After(0.5, countdownUpdate) end
+        end
+        After(0.5, countdownUpdate)
+        for i, entry in ipairs(botsToProcess) do
+            local delay = (i - 1) * 1.5
+            After(delay, function()
+                if not isBatchSelling then return end
+                local action = entry.action
+                if action.kind == "whisper" then
+                    if DEFAULT_CHAT_FRAME then DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. entry.name .. " " .. action.command) end
+                    SendChatMessage(action.command, "WHISPER", nil, entry.name)
+                    if action.refreshInventory and PBAM.Bridge and PBAM.Bridge.RequestInventory then
+                        After(1.25, function()
+                            local key = string.lower(entry.name)
+                            local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
+                            if not (inv and inv.loading) then PBAM.Bridge.RequestInventory(entry.name) end
+                        end)
+                    end
+                elseif action.kind == "buyammo" then
+                    if PBAM.Bridge.RunInventoryItemAction then
+                        PBAM.Bridge.RunInventoryItemAction(entry.name, "BUY_ITEM", action.itemId, action.count)
+                        if action.itemLink then
+                            After(1.50, function() SendLegacyInventoryCommand("e", entry.name, action.itemLink) end)
+                        end
+                    end
+                elseif action.kind == "buyammo_multi" then
+                    if PBAM.Bridge.RunInventoryItemAction then
+                        for j, subAction in ipairs(action.actions or {}) do
+                            local extraDelay = (j - 1) * 0.75
+                            After(extraDelay, function()
+                                PBAM.Bridge.RunInventoryItemAction(entry.name, "BUY_ITEM", subAction.itemId, subAction.count)
+                                if subAction.itemLink then
+                                    After(1.50, function() SendLegacyInventoryCommand("e", entry.name, subAction.itemLink) end)
+                                end
+                            end)
+                        end
+                    end
+                end
+                processed = processed + 1
+                UpdateCountdown()
+                if i == totalBots then
+                    After(1.5, function()
+                        isBatchSelling = false
+                        sellBatch:SetChecked(false)
+                        statusFs:SetText("|cff40ff40" .. label .. " complete!|r")
+                        LogStatus(statusFs, string.format("%s complete. Processed %d bot(s).", label, totalBots), 0.6, 1, 0.6)
+                    end)
+                end
+            end)
+        end
+    end
+
+    local function GetBatchHunterLevelLimit()
+        local count, minLevel = 0, nil
+        for _, bot in ipairs(PBAM.Bridge.Roster or {}) do
+            if bot and bot.name and bot.name ~= "" then
+                local className = string.lower(tostring(BotClassName(bot.name) or "")):gsub("%s+", "")
+                if className == "hunter" then
+                    count = count + 1
+                    local level = tonumber(BotLevel(bot.name)) or 0
+                    if not minLevel or level < minLevel then minLevel = level end
+                end
+            end
+        end
+        return count, minLevel or 0
+    end
+
+    local function StartBatchBuyAmmo()
+        if not buyMode then
+            LogStatus(statusFs, "Enable Buy Mode first.", 1, 0.7, 0.25)
+            return
+        end
+        if not IsMerchantOpen() then
+            LogStatus(statusFs, "Open a vendor window first.", 1, 0.35, 0.25)
+            return
+        end
+        local hunterCount, levelLimit = GetBatchHunterLevelLimit()
+        if hunterCount <= 0 then
+            LogStatus(statusFs, "No hunter bots in roster for Buy Ammo.", 1, 0.6, 0.4)
+            return
+        end
+        local candidates = {}
+        local arrow = BestVendorAmmo("arrow", levelLimit)
+        local bullet = BestVendorAmmo("bullet", levelLimit)
+        if arrow then table.insert(candidates, arrow) end
+        if bullet then table.insert(candidates, bullet) end
+        if #candidates == 0 then
+            LogStatus(statusFs, "No level-appropriate ammo found for hunter roster.", 1, 0.6, 0.4)
+            return
+        end
+        local channel = (GetNumRaidMembers and GetNumRaidMembers() > 0) and "RAID" or "PARTY"
+        for i, item in ipairs(candidates) do
+            local link = item.link or item.name
+            if link and link ~= "" then
+                local msg = "@hunter b " .. tostring(link)
+                After((i - 1) * 0.75, function()
+                    if DEFAULT_CHAT_FRAME then DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /" .. string.lower(channel) .. " " .. msg) end
+                    SendChatMessage(msg, channel)
+                end)
+            end
+        end
+        sellBatch:SetChecked(false)
+        LogStatus(statusFs, "Sent Buy Ammo command(s) to @hunter for " .. tostring(hunterCount) .. " hunter bot(s).", 0.35, 0.9, 0.45)
+    end
+
+    local function StartBatchSell(command, label)
+        if not sellMode then
+            LogStatus(statusFs, "Enable Sell Mode first.", 1, 0.7, 0.25)
+            return
+        end
+        local currentTarget = GetCurrentMerchantTargetName()
+        if not currentTarget or currentTarget == "" then
+            LogStatus(statusFs, "Select a vendor first!", 1, 0.35, 0.25)
+            return
+        end
+        local channel = (GetNumRaidMembers and GetNumRaidMembers() > 0) and "RAID" or "PARTY"
+        if DEFAULT_CHAT_FRAME then
+            DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /" .. string.lower(channel) .. " " .. command)
+        end
+        SendChatMessage(command, channel)
+        sellBatch:SetChecked(false)
+        LogStatus(statusFs, "Sent batch command '" .. command .. "' to " .. channel .. ".", 0.35, 0.9, 0.45)
+    end
+
     local function SendLegacyInventoryCommand(command, botName, item, suffix)
         if not botName or botName == "" or not command or command == "" then return false end
         local link = item and ItemLink(item) or ""
@@ -501,6 +883,43 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         After(1.75, function() if PBAM.SelectedBot and PBAM.RefreshEquipmentTab then PBAM.RefreshEquipmentTab(PBAM.SelectedBot, true) end end)
     end
 
+    RenderMerchantRows = function()
+        ClearRows()
+        HideTargetMenu()
+        titleFs:SetText("Merchant")
+        goldFs:SetText("Vendor inventory")
+        slotsFs:SetText(PBAM.SelectedBot and ("Buying for: " .. tostring(PBAM.SelectedBot)) or "Select a bot to buy items.")
+        if not IsMerchantOpen() then
+            local r = Row(1); r.item=nil; r.itemText=nil; r.merchantItem=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_Coin_01"); r.text:SetText("Open a merchant window to browse items.")
+            content:SetHeight(60)
+            return false
+        end
+        local merchantItems = BuildMerchantItems()
+        if #merchantItems == 0 then
+            local r = Row(1); r.item=nil; r.itemText=nil; r.merchantItem=nil; r.icon:SetTexture("Interface\\Icons\\INV_Box_01"); r.text:SetText("This merchant has no items.")
+            content:SetHeight(60)
+            return false
+        end
+        for i, item in ipairs(merchantItems) do
+            local r = Row(i)
+            r.item = item.link or item.name; r.itemText = item.link or item.name; r.merchantItem = item
+            r.icon:SetTexture(item.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+            local priceText = (GetCoinTextureString and GetCoinTextureString(item.price or 0)) or MoneyText(item.price or 0)
+            local stackText = (item.quantity and item.quantity > 1) and ("  Stack: " .. tostring(item.quantity)) or ""
+            local availText = (item.available and item.available > -1) and ("  Avail: " .. tostring(item.available)) or ""
+            local extraText = item.extendedCost and "  |cffff6060(extended cost)|r" or ""
+            r.text:SetText(string.format("%s\n%s%s%s%s", tostring(item.name or ("Merchant Item #" .. tostring(i))), tostring(priceText or ""), stackText, availText, extraText))
+        end
+        content:SetHeight(20 + #merchantItems * ROW_H)
+        return true
+    end
+
+    RefreshMerchantView = function()
+        if PBAM.CurrentTab ~= "Inventory" or not buyMode then return end
+        emptyFs:Hide(); header:Show(); body:Show()
+        RenderMerchantRows()
+    end
+
     UpdateRowHighlights = function()
         local selectedText = selectedTradeItem and ItemText(selectedTradeItem) or nil
         for i, r in ipairs(rows) do
@@ -513,16 +932,44 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
 
     local function HandleItemClick(row, button)
         local item = row and row.item
-        if not item then return end
+        if not row or (not item and not (buyMode and row.merchantItem)) then return end
         HideTargetMenu()
 
-        if IsShiftKeyDown and IsShiftKeyDown() and button == "LeftButton" then
+        if item and IsShiftKeyDown and IsShiftKeyDown() and button == "LeftButton" then
             local link = ItemLink(item)
             if ChatEdit_InsertLink and link and link ~= "" and ChatEdit_InsertLink(link) then return end
             LogStatus(statusFs, "Item link: " .. tostring(link or ItemName(item)), 0.75, 0.75, 0.75)
             return
         end
 
+        if buyMode then
+            local merchantItem = row and row.merchantItem
+            if not merchantItem then return end
+            if not PBAM.SelectedBot then
+                LogStatus(statusFs, "Select a bot first.", 1, 0.35, 0.25)
+                return
+            end
+            if merchantItem.extendedCost then
+                LogStatus(statusFs, "Extended-cost vendor items are not supported yet.", 1, 0.35, 0.25)
+                return
+            end
+            if not merchantItem.itemId or merchantItem.itemId <= 0 then
+                LogStatus(statusFs, "Cannot buy this merchant item: no item id.", 1, 0.35, 0.25)
+                return
+            end
+            local count = button == "RightButton" and math.max(1, tonumber(merchantItem.quantity) or 1) or 1
+            if PBAM.Bridge.RunInventoryItemAction and PBAM.Bridge.RunInventoryItemAction(PBAM.SelectedBot, "BUY_ITEM", merchantItem.itemId, count) then
+                LogStatus(statusFs, "Buying " .. tostring(merchantItem.name or merchantItem.itemId) .. " x" .. tostring(count) .. " for " .. tostring(PBAM.SelectedBot) .. "...", 0.95, 0.8, 0.25)
+            else
+                local link = merchantItem.link or merchantItem.name
+                if link and SendLegacyInventoryCommand("b", PBAM.SelectedBot, link, tostring(count)) then
+                    LogStatus(statusFs, "Buy command sent for " .. tostring(merchantItem.name or merchantItem.itemId) .. ".", 0.35, 0.9, 0.45)
+                else
+                    LogStatus(statusFs, "Could not send buy command.", 1, 0.35, 0.25)
+                end
+            end
+            return
+        end
         if not PBAM.SelectedBot then return end
         if showingBank then
             local id = ItemId(item)
@@ -603,7 +1050,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                 LogStatus(statusFs, "Cannot destroy: item link unavailable.", 1, 0.35, 0.25)
                 return
             end
-            
+
             -- Send 'destroy <itemLink>' command to destroy the item
             if DEFAULT_CHAT_FRAME then
                 DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " destroy " .. string.sub(link, 1, 100))
@@ -636,8 +1083,14 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             local link = ItemLink(self.item or self.itemText)
             if link and tostring(link):match("|Hitem:") then GameTooltip:SetHyperlink(link) else GameTooltip:AddLine(self.itemText, 1, 1, 1) end
-            if equipMode then GameTooltip:AddLine("Equip Mode: left=normal/main hand, right=offhand/standard (playerbot 'e' command)", 0.35, 0.9, 0.45, true) end
-            if tradeMode then GameTooltip:AddLine("Trade Mode: click to insert item into open trade ('t' + 'give' commands)", 0.95, 0.8, 0.25, true) end
+            if buyMode and self.merchantItem and SetMerchantItem then
+                GameTooltip:ClearLines()
+                GameTooltip:SetMerchantItem(self.merchantItem.index)
+            else
+                if equipMode then GameTooltip:AddLine("Equip Mode: left=normal/main hand, right=offhand/standard legacy equip.", 0.35, 0.9, 0.45, true) end
+                if tradeMode then GameTooltip:AddLine("Trade Mode: click to insert item into open trade ('t' + 'give' commands)", 0.95, 0.8, 0.25, true) end
+                if buyMode and self.merchantItem then GameTooltip:AddLine("Buy Mode: left-click buys 1, right-click buys one merchant stack.", 0.35, 0.9, 0.45, true) end
+            end
             GameTooltip:Show()
         end)
         r:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -647,6 +1100,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     equipCheck:SetScript("OnClick", function(self)
         equipMode = self:GetChecked() and true or false
         if equipMode then
+            buyMode = false; buyCheck:SetChecked(false)
             destroyCheck:SetChecked(false)
             sellCheck:SetChecked(false)
             sellBatch:SetChecked(false)
@@ -662,6 +1116,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     tradeCheck:SetScript("OnClick", function(self)
         tradeMode = self:GetChecked() and true or false
         if tradeMode then
+            buyMode = false; buyCheck:SetChecked(false)
             destroyCheck:SetChecked(false)
             sellCheck:SetChecked(false)
             sellBatch:SetChecked(false)
@@ -684,6 +1139,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     sellCheck:SetScript("OnClick", function(self)
         sellMode = self:GetChecked() and true or false
         if sellMode then
+            buyMode = false; buyCheck:SetChecked(false)
             equipCheck:SetChecked(false)
             tradeCheck:SetChecked(false)
             destroyCheck:SetChecked(false)
@@ -696,13 +1152,16 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     end)
 
     sellGreysBtn:SetScript("OnClick", function()
+        if sellBatch:GetChecked() then
+            StartBatchSell("s *", "Sell Greys")
+            return
+        end
         if not PBAM.SelectedBot or not sellMode then return end
         local currentTarget = GetCurrentMerchantTargetName()
         if not currentTarget or currentTarget == "" then
             LogStatus(statusFs, "Select a vendor first!", 1, 0.35, 0.25)
             return
         end
-        -- Send 's *' command to sell all grey items
         if DEFAULT_CHAT_FRAME then
             DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " s *")
         end
@@ -711,13 +1170,16 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     end)
 
     sellVendorBtn:SetScript("OnClick", function()
+        if sellBatch:GetChecked() then
+            StartBatchSell("s vendor", "Sell Vendorable")
+            return
+        end
         if not PBAM.SelectedBot or not sellMode then return end
         local currentTarget = GetCurrentMerchantTargetName()
         if not currentTarget or currentTarget == "" then
             LogStatus(statusFs, "Select a vendor first!", 1, 0.35, 0.25)
             return
         end
-        -- Send 's vendor' command to sell all vendorable items
         if DEFAULT_CHAT_FRAME then
             DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " s vendor")
         end
@@ -725,20 +1187,126 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         After(1.25, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
     end)
 
+    repairAllBtn:SetScript("OnClick", function()
+        local currentTarget = GetCurrentMerchantTargetName()
+        if not currentTarget or currentTarget == "" then
+            LogStatus(statusFs, "Select a repair vendor first!", 1, 0.35, 0.25)
+            return
+        end
+        if sellBatch:GetChecked() then
+            local channel = (GetNumRaidMembers and GetNumRaidMembers() > 0) and "RAID" or "PARTY"
+            if DEFAULT_CHAT_FRAME then
+                DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /" .. string.lower(channel) .. " repair all")
+            end
+            SendChatMessage("repair all", channel)
+            sellBatch:SetChecked(false)
+            LogStatus(statusFs, "Sent batch repair command to " .. channel .. ".", 0.35, 0.9, 0.45)
+            return
+        end
+        if not PBAM.SelectedBot then return end
+        if DEFAULT_CHAT_FRAME then
+            DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " repair all")
+        end
+        SendChatMessage("repair all", "WHISPER", nil, PBAM.SelectedBot)
+        LogStatus(statusFs, "Sent repair command for " .. tostring(PBAM.SelectedBot) .. ".", 0.35, 0.9, 0.45)
+    end)
+
+    buyAmmoBtn:SetScript("OnClick", function()
+        if sellBatch:GetChecked() then
+            StartBatchBuyAmmo()
+            return
+        end
+        if not buyMode then
+            LogStatus(statusFs, "Enable Buy Mode first.", 1, 0.7, 0.25)
+            return
+        end
+        if not PBAM.SelectedBot then
+            LogStatus(statusFs, "Select a bot first.", 1, 0.35, 0.25)
+            return
+        end
+        local action, reason = DetermineAmmoPurchase(PBAM.SelectedBot)
+        if not action then
+            LogStatus(statusFs, reason or ("Could not determine ammo for " .. tostring(PBAM.SelectedBot) .. "."), 1, 0.35, 0.25)
+            return
+        end
+        if action.kind == "buyammo_multi" then
+            if not PBAM.Bridge.RunInventoryItemAction then
+                LogStatus(statusFs, "Could not send Buy Ammo request.", 1, 0.35, 0.25)
+                return
+            end
+            LogStatus(statusFs, "Buying ammo/shot for " .. tostring(PBAM.SelectedBot) .. "...", 0.35, 0.9, 0.45)
+            for i, subAction in ipairs(action.actions or {}) do
+                local delay = (i - 1) * 0.75
+                After(delay, function()
+                    PBAM.Bridge.RunInventoryItemAction(PBAM.SelectedBot, "BUY_ITEM", subAction.itemId, subAction.count)
+                    if subAction.itemLink then
+                        After(1.50, function()
+                            if PBAM.SelectedBot and subAction.itemLink then
+                                SendLegacyInventoryCommand("e", PBAM.SelectedBot, subAction.itemLink)
+                            end
+                        end)
+                    end
+                end)
+            end
+        elseif PBAM.Bridge.RunInventoryItemAction and PBAM.Bridge.RunInventoryItemAction(PBAM.SelectedBot, "BUY_ITEM", action.itemId, action.count) then
+            LogStatus(statusFs, "Buying ammo for " .. tostring(PBAM.SelectedBot) .. ": " .. tostring(action.itemName) .. " x" .. tostring(action.count) .. "...", 0.35, 0.9, 0.45)
+            if action.itemLink then
+                After(1.50, function()
+                    if PBAM.SelectedBot and action.itemLink then
+                        SendLegacyInventoryCommand("e", PBAM.SelectedBot, action.itemLink)
+                    end
+                end)
+            end
+        else
+            LogStatus(statusFs, "Could not send Buy Ammo request.", 1, 0.35, 0.25)
+        end
+    end)
+
     sellBatch:SetScript("OnClick", function(self)
-        if self:GetChecked() and not sellMode then
+        if self:GetChecked() and not (sellMode or buyMode) then
             self:SetChecked(false)
-            LogStatus(statusFs, "Batch Mode requires Sell Mode to be enabled.", 1, 0.7, 0.25)
+            LogStatus(statusFs, "Batch Mode requires Sell Mode or Buy Mode to be enabled.", 1, 0.7, 0.25)
         elseif self:GetChecked() then
-            LogStatus(statusFs, "Batch Mode enabled. Currently sells whole stack on item click (same as single mode).", 0.95, 0.8, 0.25)
+            LogStatus(statusFs, "Batch Mode enabled. Sell buttons, Buy Ammo, and Repair All will process the whole roster.", 0.95, 0.8, 0.25)
         else
             LogStatus(statusFs, "Batch Mode disabled.", 0.75, 0.75, 0.75)
         end
     end)
+    buyCheck:SetScript("OnClick", function(self)
+        buyMode = self:GetChecked() and true or false
+        if buyMode then
+            equipMode = false; equipCheck:SetChecked(false)
+            tradeMode = false; tradeCheck:SetChecked(false)
+            sellMode = false; sellCheck:SetChecked(false)
+            destroyMode = false; destroyCheck:SetChecked(false)
+            sellBatch:SetChecked(false)
+            showingBank = false
+            LogStatus(statusFs, "Buy Mode enabled. Open a vendor window to browse merchant items.", 0.35, 0.9, 0.45)
+            RefreshMerchantView()
+        else
+            showingBank = false
+            if PBAM.SelectedBot then
+                local key = string.lower(PBAM.SelectedBot)
+                local token = PBAM.Bridge.RequestInventory and PBAM.Bridge.RequestInventory(PBAM.SelectedBot) or nil
+                if token then
+                    PBAM.Bridge.Inventory[key] = { name = PBAM.SelectedBot, token = token, items = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
+                    LogStatus(statusFs, "Buy Mode disabled. Refreshing inventory...", 0.95, 0.8, 0.25)
+                else
+                    LogStatus(statusFs, "Buy Mode disabled. Inventory refresh already pending.", 0.75, 0.75, 0.75)
+                end
+                panel.OnBotSelect(PBAM.SelectedBot)
+            else
+                LogStatus(statusFs, "Buy Mode disabled.", 0.75, 0.75, 0.75)
+            end
+        end
+        UpdateActionButtons(PBAM.SelectedBot)
+    end)
 
     destroyCheck:SetScript("OnClick", function(self)
+        destroyMode = self:GetChecked() and true or false
         if self:GetChecked() then
             -- Disable all other mode checkboxes when Destroy Mode is enabled
+            buyMode = false; buyCheck:SetChecked(false)
             equipCheck:SetChecked(false)
             tradeCheck:SetChecked(false)
             sellCheck:SetChecked(false)
@@ -750,14 +1318,34 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     end)
 
     refreshBtn:SetScript("OnClick", function()
-        if PBAM.SelectedBot then
+        if buyMode then
+            RefreshMerchantView()
+        elseif PBAM.SelectedBot then
             showingBank = false
-            PBAM.Bridge.Inventory[string.lower(PBAM.SelectedBot)] = nil
+            local key = string.lower(PBAM.SelectedBot)
+            PBAM.Bridge.Inventory[key] = { name = PBAM.SelectedBot, items = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
             PBAM.Bridge.RequestInventory(PBAM.SelectedBot)
             panel.OnBotSelect(PBAM.SelectedBot)
         end
     end)
+
+    local merchantFrame = CreateFrame("Frame")
+    merchantFrame:RegisterEvent("MERCHANT_SHOW")
+    merchantFrame:RegisterEvent("MERCHANT_UPDATE")
+    merchantFrame:RegisterEvent("MERCHANT_CLOSED")
+    merchantFrame:SetScript("OnEvent", function(_, event)
+        if PBAM.CurrentTab ~= "Inventory" or not buyMode then return end
+        if event == "MERCHANT_CLOSED" then
+            buyMode = false
+            if buyCheck then buyCheck:SetChecked(false) end
+            LogStatus(statusFs, "Merchant window closed. Buy Mode disabled.", 0.75, 0.75, 0.75)
+            if PBAM.SelectedBot and panel.OnBotSelect then panel.OnBotSelect(PBAM.SelectedBot) end
+            return
+        end
+        RefreshMerchantView()
+    end)
     bankBtn:SetScript("OnClick", function()
+        if buyMode then buyMode = false; buyCheck:SetChecked(false) end
         if PBAM.SelectedBot then
             showingBank = true
             PBAM.Bridge.Bank[string.lower(PBAM.SelectedBot)] = nil
@@ -766,16 +1354,26 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         end
     end)
     invBtn:SetScript("OnClick", function()
+        if buyMode then buyMode = false; buyCheck:SetChecked(false) end
         if PBAM.SelectedBot then showingBank = false; panel.OnBotSelect(PBAM.SelectedBot) end
     end)
 
     panel.OnRefresh = function(botName)
+        if buyMode then RefreshMerchantView(); return end
         if not botName then return end
         if showingBank then
             PBAM.Bridge.Bank[string.lower(botName)] = nil
             PBAM.Bridge.RequestBank(botName)
         else
-            PBAM.Bridge.Inventory[string.lower(botName)] = nil
+            local key = string.lower(botName)
+            local now = GetTime and GetTime() or 0
+            local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
+            if inv and inv.loading and (now - lastTabOpenInventoryRequest) < 1.0 then
+                panel.OnBotSelect(botName)
+                return
+            end
+            lastTabOpenInventoryRequest = now
+            PBAM.Bridge.Inventory[key] = { name = botName, items = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
             PBAM.Bridge.RequestInventory(botName)
         end
         panel.OnBotSelect(botName)
@@ -787,6 +1385,10 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         UpdateActionButtons(botName)
         if not botName then emptyFs:Show(); header:Hide(); body:Hide(); return end
         emptyFs:Hide(); header:Show(); body:Show()
+        if buyMode then
+            RefreshMerchantView()
+            return
+        end
         local key = string.lower(botName)
         local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
         local bank = PBAM.Bridge.Bank and PBAM.Bridge.Bank[key]
@@ -799,7 +1401,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                 content:SetHeight(60); return
             end
             if bank.error and bank.error ~= "" then
-                local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_Coin_02"); r.text:SetText("Bank unavailable: " .. bank.error .. " — stand near/interact with a banker and try again.")
+                local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_Coin_02"); r.text:SetText("Bank unavailable: " .. bank.error .. " - stand near/interact with a banker and try again.")
                 content:SetHeight(60); return
             end
             if not bank.items or #bank.items == 0 then

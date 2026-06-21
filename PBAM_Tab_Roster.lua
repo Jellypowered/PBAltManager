@@ -90,21 +90,8 @@ local function QuestLink(questId, questName)
     return name
 end
 
-local afterFrame, afterJobs
 local function After(delay, func)
-    if C_Timer and C_Timer.After then return C_Timer.After(delay, func) end
-    if not afterFrame then
-        afterJobs = {}
-        afterFrame = CreateFrame("Frame")
-        afterFrame:SetScript("OnUpdate", function(_, elapsed)
-            for i = #afterJobs, 1, -1 do
-                local job = afterJobs[i]
-                job.t = job.t - elapsed
-                if job.t <= 0 then table.remove(afterJobs, i); job.f() end
-            end
-        end)
-    end
-    table.insert(afterJobs, { t = tonumber(delay) or 0, f = func })
+    return PBAM.After(delay, func)
 end
 
 local function BestPlayerSpec()
@@ -174,7 +161,7 @@ end
 local function RequestSelectedAux(botName)
     if not botName or not PBAM.Bridge then return end
     -- Player rows are selected locally; bridge/legacy bot requests may not apply to the logged-in character.
-    if PBAM.NormalizeName(UnitName and UnitName("player") or nil) == PBAM.NormalizeName(botName) then return end
+    if string.lower(tostring(UnitName and UnitName("player") or "")) == string.lower(tostring(botName)) then return end
     if PBAM.Bridge.RequestQuests then PBAM.Bridge.RequestQuests("ALL", botName) end
     if PBAM.Bridge.RequestBotReputations then PBAM.Bridge.RequestBotReputations(botName) end
 end
@@ -270,8 +257,9 @@ PBAM.RegisterTab("Roster", "Roster", 1, function(panel)
         r.icon:SetSize(16,16); 
         r.icon:SetPoint("LEFT", r, "LEFT", 0, 0); r.icon:SetTexture("Interface\\GossipFrame\\AvailableQuestIcon")
         r.name = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); 
-        r.name:SetPoint("LEFT", r.icon, "RIGHT", 6, 0); PBAM.WrapFontString(r.name, QUEST_TEXT_W)
-        r.abandon = CreateFrame("Button", nil, r, "UIPanelButtonTemplate"); r.abandon:SetSize(24,20); r.abandon:SetPoint("RIGHT", r, "RIGHT", -32, 0); r.abandon:SetText("A")
+        r.name:SetPoint("LEFT", r.icon, "RIGHT", 0, 0); PBAM.WrapFontString(r.name, QUEST_TEXT_W)
+        r.abandon = CreateFrame("Button", nil, r, "UIPanelButtonTemplate"); r.abandon:SetSize(24,20);
+        r.abandon:SetPoint("RIGHT", r, "RIGHT", -36, 0); r.abandon:SetText("A")
         r.abandon:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:SetText("Abandon quest", 1, 0.82, 0.22, true)
@@ -279,7 +267,8 @@ PBAM.RegisterTab("Roster", "Roster", 1, function(panel)
             GameTooltip:Show()
         end)
         r.abandon:SetScript("OnLeave", function() GameTooltip:Hide() end)
-        r.share = CreateFrame("Button", nil, r, "UIPanelButtonTemplate"); r.share:SetSize(24,20); r.share:SetPoint("RIGHT", r, "RIGHT", -8, 0); r.share:SetText("S")
+        r.share = CreateFrame("Button", nil, r, "UIPanelButtonTemplate"); r.share:SetSize(24,20);
+        r.share:SetPoint("RIGHT", r, "RIGHT", -12, 0); r.share:SetText("S")
         r.share:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:SetText("Share quest", 1, 0.82, 0.22, true)
@@ -375,7 +364,13 @@ PBAM.RegisterTab("Roster", "Roster", 1, function(panel)
         if isPlayer then
             quests = LocalPlayerQuests()
         else
-            local data = PBAM.Bridge.Quests and PBAM.Bridge.Quests[string.lower(botName or "")]
+            local key = string.lower(botName or "")
+            local data = PBAM.Bridge.Quests and PBAM.Bridge.Quests[key]
+            -- Also try with normalized name as fallback
+            if not data and PBAM.NormalizeName then
+                local normKey = PBAM.NormalizeName(botName)
+                data = PBAM.Bridge.Quests[normKey]
+            end
             quests = data and data.quests or {}
         end
         questStatus:SetText(#quests == 0 and (isPlayer and "No local player quests found." or "No quest data yet. Refreshing from bridge if available...") or (#quests .. " quests"))
@@ -452,7 +447,13 @@ PBAM.RegisterTab("Roster", "Roster", 1, function(panel)
         RefreshReps(botName, isPlayer)
     end
 
-    PBAM.Bridge.RegisterCallback("QuestsUpdated", function(botName) if botName == PBAM.SelectedBot then RefreshQuests(botName, false) end end)
+    PBAM.Bridge.RegisterCallback("QuestsUpdated", function(botName)
+        if not botName or not PBAM.SelectedBot then return end
+        local key = string.lower(tostring(botName))
+        if key == string.lower(tostring(PBAM.SelectedBot)) then
+            RefreshQuests(PBAM.SelectedBot, false)
+        end
+    end)
     PBAM.Bridge.RegisterCallback("BotReputationsUpdated", function(botName) if botName == PBAM.SelectedBot then RefreshReps(botName, false) end end)
     PBAM.Bridge.RegisterCallback("BotDetailUpdated", function(detail) if detail and detail.name == PBAM.SelectedBot and panel.OnBotSelect then panel.OnBotSelect(detail.name) end end)
     PBAM.Bridge.RegisterCallback("StateUpdated", function(botName) if botName == PBAM.SelectedBot and panel.OnBotSelect then panel.OnBotSelect(botName) end end)

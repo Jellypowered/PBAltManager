@@ -11,11 +11,15 @@ PBAMConfig = PBAMConfig or {}
 PBAMConfig.Minimap = PBAMConfig.Minimap or { hide = false, angle = 0 }
 PBAMConfig.MainWindow = PBAMConfig.MainWindow or { width = 800, height = 600 }
 PBAMConfig.RosterSort = PBAMConfig.RosterSort or "alpha"
+PBAMConfig.RosterSortByTab = PBAMConfig.RosterSortByTab or {}
 
 PBAM.MainWindow = nil
 PBAM.SelectedBot = nil
 PBAM.SelectedBotLower = nil
 PBAM.DebugEnabled = false  -- /pbam debug toggles this
+PBAM.PendingRosterInventoryRequests = PBAM.PendingRosterInventoryRequests or {}  -- [key] = timestamp when request was SENT
+PBAM.PendingRosterSkillRequests = PBAM.PendingRosterSkillRequests or {}  -- [key] = timestamp when request was SENT
+PBAM.LastRefreshTime = PBAM.LastRefreshTime or {}  -- [type~bot] = timestamp for throttling
 
 -- ── Debug Print ─────────────────────────────────────────────
 
@@ -24,6 +28,22 @@ PBAM.DebugPrint = function(...)
     local parts = { ... }
     for i = 1, #parts do parts[i] = tostring(parts[i]) end
     print("|cFF69CCF0[PBAM]|r " .. table.concat(parts, " "))
+end
+
+-- Debounced roster refresh to prevent excessive UI updates during rapid data changes
+local rosterRefreshPending = false
+local rosterRefreshQueue = 0
+function PBAM.QueueRosterRefresh()
+    rosterRefreshQueue = rosterRefreshQueue + 1
+    if rosterRefreshPending then return end
+    rosterRefreshPending = true
+    PBAM.After(0.1, function()  -- 100ms debounce
+        rosterRefreshPending = false
+        local count = rosterRefreshQueue
+        rosterRefreshQueue = 0
+        if count > 1 then PBAM.DebugPrint("RosterRefresh: batched " .. count .. " updates") end
+        if PBAM.RefreshRosterDisplay then PBAM.RefreshRosterDisplay() end
+    end)
 end
 
 PBAM.LogError = function(msg)
@@ -50,6 +70,69 @@ local ROLE_BY_SPEC = {
 }
 
 local ROLE_SORT_ORDER = { Tank=1, Healer=2, DPS=3, ["Tank/DPS"]=3, Unknown=4, ["N/A"]=4 }
+local ROSTER_SORT_REQUEST_TTL = 3.0
+local ROSTER_SORT_MAX_INFLIGHT = 4
+local REFRESH_THROTTLE_MS = 500  -- Minimum ms between same refreshes
+
+local sharedAfterFrame, sharedAfterJobs
+function PBAM.After(delay, func)
+    if C_Timer and C_Timer.After then return C_Timer.After(delay, func) end
+    if not sharedAfterFrame then
+        sharedAfterJobs = {}
+        sharedAfterFrame = CreateFrame("Frame")
+        sharedAfterFrame:SetScript("OnUpdate", function(_, elapsed)
+            for i = #sharedAfterJobs, 1, -1 do
+                local job = sharedAfterJobs[i]
+                job.t = job.t - elapsed
+                if job.t <= 0 then table.remove(sharedAfterJobs, i); job.f() end
+            end
+        end)
+    end
+    table.insert(sharedAfterJobs, { t = tonumber(delay) or 0, f = func })
+end
+
+function PBAM.RunThrottledFanout(queueNames, pendingNames, pendingSince, requestFunc, options)
+    if not requestFunc then return end
+    options = options or {}
+    local ttl = tonumber(options.ttl) or ROSTER_SORT_REQUEST_TTL
+    local maxInflight = tonumber(options.maxInflight) or ROSTER_SORT_MAX_INFLIGHT
+    local onBeforeRequest = options.onBeforeRequest
+    local onTimeout = options.onTimeout
+    local now = GetTime and GetTime() or 0
+    local inflight = 0
+
+    for key, startedAt in pairs(pendingSince or {}) do
+        if (now - (tonumber(startedAt) or 0)) < ttl then
+            inflight = inflight + 1
+        else
+            pendingSince[key] = nil
+            if onTimeout then onTimeout(key) end
+        end
+    end
+
+    local available = math.max(0, maxInflight - inflight)
+    if available <= 0 then return end
+
+    for _, name in ipairs(queueNames or {}) do
+        if available <= 0 then break end
+        if pendingNames[name] then
+            local key = string.lower(tostring(name or ""))
+            if key ~= "" and not pendingSince[key] then
+                if onBeforeRequest then onBeforeRequest(name, key) end
+                pendingSince[key] = now
+                requestFunc(name)
+                PBAM.After(ttl, function()
+                    local current = pendingSince[key]
+                    if current and ((GetTime and GetTime() or 0) - current) >= ttl then
+                        pendingSince[key] = nil
+                        if onTimeout then onTimeout(key) end
+                    end
+                end)
+                available = available - 1
+            end
+        end
+    end
+end
 
 local function ClassKey(className)
     local s = tostring(className or ""):upper():gsub("%s+", "")
@@ -86,12 +169,24 @@ local function BestRoleForDetail(detail)
     return ROLE_BY_SPEC[spec] or "DPS"
 end
 
-function PBAM.GetRosterSortMode()
+function PBAM.GetStoredRosterSortMode(tabName)
+    tabName = tostring(tabName or PBAM.CurrentTab or "")
+    local byTab = PBAMConfig.RosterSortByTab or {}
+    local mode = byTab[tabName]
+    if mode and mode ~= "" then return tostring(mode) end
     return tostring(PBAMConfig.RosterSort or "alpha")
 end
 
-function PBAM.SetRosterSortMode(mode)
-    PBAMConfig.RosterSort = tostring(mode or "alpha")
+function PBAM.GetRosterSortMode()
+    return PBAM.GetStoredRosterSortMode(PBAM.CurrentTab)
+end
+
+function PBAM.SetRosterSortMode(mode, tabName)
+    mode = tostring(mode or "alpha")
+    tabName = tostring(tabName or PBAM.CurrentTab or "")
+    PBAMConfig.RosterSortByTab = PBAMConfig.RosterSortByTab or {}
+    if tabName ~= "" then PBAMConfig.RosterSortByTab[tabName] = mode end
+    PBAMConfig.RosterSort = mode
     PBAM.RefreshRosterDisplay()
 end
 
@@ -102,13 +197,56 @@ function PBAM.GetRosterRole(entry)
     return BestRoleForDetail(detail)
 end
 
+function PBAM.IsRosterSortVisible(mode, tabName)
+    mode = tostring(mode or "")
+    tabName = tostring(tabName or PBAM.CurrentTab or "")
+    if mode == "profession" then return tabName == "Professions" end
+    if mode == "bagspace" then return tabName == "Inventory" end
+    return true
+end
+
+function PBAM.GetAppropriateRosterSortMode(tabName, mode)
+    tabName = tostring(tabName or PBAM.CurrentTab or "")
+    mode = tostring(mode or PBAM.GetStoredRosterSortMode(tabName))
+    if PBAM.IsRosterSortVisible(mode, tabName) then return mode end
+    return "alpha"
+end
+
+function PBAM.GetActiveRosterSortMode()
+    return PBAM.GetAppropriateRosterSortMode(PBAM.CurrentTab, PBAM.GetStoredRosterSortMode(PBAM.CurrentTab))
+end
+
 function PBAM.GetRosterSortOptions()
-    return {
+    local options = {
         { value="alpha", label="Alphabetical", tooltip="Show all roster entries alphabetically in one group." },
         { value="class", label="By Class", tooltip="Group roster by class, then alphabetize names inside each class." },
         { value="level", label="By Level", tooltip="Group roster by level, then alphabetize names inside each level." },
         { value="role", label="By Role", tooltip="Group roster by role: Tank, Healer, DPS, Unknown. Names stay alphabetical inside each role." },
+        { value="profession", label="By Profession", tooltip="Group roster by primary and secondary professions. Bots can appear more than once. Inside each profession, sort by highest skill first, then alphabetically." },
+        { value="bagspace", label="Free Bag Space", tooltip="Sort roster by lowest free bag space first, then alphabetically." },
     }
+    local visible = {}
+    for _, entry in ipairs(options) do
+        if PBAM.IsRosterSortVisible(entry.value) then table.insert(visible, entry) end
+    end
+    return visible
+end
+
+function PBAM.UpdateRosterSortDropdown()
+    if not PBAM.RosterSortDropdown then return end
+    local sortValues = {}
+    for _, entry in ipairs(PBAM.GetRosterSortOptions()) do
+        table.insert(sortValues, {
+            value = entry.value,
+            label = entry.label,
+            tooltip = entry.tooltip,
+            onSelect = function(value)
+                PBAM.SetRosterSortMode(value, PBAM.CurrentTab)
+            end,
+        })
+    end
+    PBAM.RosterSortDropdown:SetValues(sortValues)
+    PBAM.RosterSortDropdown:SetValue(PBAM.GetActiveRosterSortMode())
 end
 
 -- ── Bridge Message Handler ──────────────────────────────────
@@ -121,32 +259,69 @@ end)
 
 -- ── Bridge Callback Registration ───────────────────────────
 
-PBAM.Bridge.RegisterCallback("RosterUpdated", function(roster)
-    PBAM.DebugPrint("RosterUpdated: " .. #roster .. " bots")
-    PBAM.RefreshRosterDisplay()
-end)
+function PBAM.RegisterCoreBridgeCallbacks()
+    PBAM.Bridge.RegisterCallback("RosterUpdated", function(roster)
+        PBAM.DebugPrint("RosterUpdated: " .. #roster .. " bots")
+        PBAM.RefreshRosterDisplay()
+    end)
 
-PBAM.Bridge.RegisterCallback("Connected", function()
-    if not PBAM._BridgeConnectedAnnounced then
-        PBAM.LogInfo("Bridge connected")
-        PBAM._BridgeConnectedAnnounced = true
-    end
-    PBAM.UpdateConnectionDot()
-end)
+    PBAM.Bridge.RegisterCallback("Connected", function()
+        if not PBAM._BridgeConnectedAnnounced then
+            PBAM.LogInfo("Bridge connected")
+            PBAM._BridgeConnectedAnnounced = true
+        end
+        PBAM.UpdateConnectionDot()
+    end)
 
-PBAM.Bridge.RegisterCallback("Disconnected", function(reason)
-    PBAM._BridgeConnectedAnnounced = false
-    PBAM.LogError("Bridge disconnected: " .. tostring(reason or ""))
-    PBAM.UpdateConnectionDot()
-end)
+    PBAM.Bridge.RegisterCallback("Disconnected", function(reason)
+        PBAM._BridgeConnectedAnnounced = false
+        PBAM.LogError("Bridge disconnected: " .. tostring(reason or ""))
+        PBAM.UpdateConnectionDot()
+    end)
 
-PBAM.Bridge.RegisterCallback("BotDetailUpdated", function(detail)
-    PBAM.DebugPrint("BotDetailUpdated: " .. (detail.name or ""))
-end)
+    PBAM.Bridge.RegisterCallback("BotDetailUpdated", function(detail)
+        PBAM.DebugPrint("BotDetailUpdated: " .. (detail.name or ""))
+        PBAM.QueueRosterRefresh()
+    end)
 
-PBAM.Bridge.RegisterCallback("StateUpdated", function(name, state)
-    PBAM.DebugPrint("StateUpdated: " .. name)
-end)
+    PBAM.Bridge.RegisterCallback("BotDetailsUpdated", function()
+        PBAM.QueueRosterRefresh()
+    end)
+
+    PBAM.Bridge.RegisterCallback("StatesUpdated", function()
+        PBAM.QueueRosterRefresh()
+    end)
+
+    PBAM.Bridge.RegisterCallback("StatsUpdated", function()
+        PBAM.QueueRosterRefresh()
+    end)
+
+    PBAM.Bridge.RegisterCallback("BotSkillsUpdated", function(botName)  
+        if botName then
+            local key = string.lower(tostring(botName))
+            PBAM.PendingRosterSkillRequests[key] = nil
+        end
+        if PBAM.CurrentTab == "Professions" and PBAM.GetActiveRosterSortMode and PBAM.GetActiveRosterSortMode() == "profession" then
+            PBAM.QueueRosterRefresh()
+        end
+    end)
+
+    PBAM.Bridge.RegisterCallback("InventoryUpdated", function(botName)  
+        if botName then
+            local key = string.lower(tostring(botName))
+            PBAM.PendingRosterInventoryRequests[key] = nil
+        end
+        if PBAM.CurrentTab == "Inventory" and PBAM.GetActiveRosterSortMode and PBAM.GetActiveRosterSortMode() == "bagspace" then
+            PBAM.QueueRosterRefresh()
+        end
+    end)
+
+    PBAM.Bridge.RegisterCallback("StateUpdated", function(name, state)
+        PBAM.DebugPrint("StateUpdated: " .. name)
+    end)
+end
+
+PBAM.RegisterCoreBridgeCallbacks()
 
 -- ── Slash Commands ──────────────────────────────────────────
 
@@ -165,7 +340,7 @@ SlashCmdList["PBAM"] = function(msg)
         PBAM.RefreshAll()
 
     elseif cmd == "about" then
-        DEFAULT_CHAT_FRAME:AddMessage("|cFFD4AF37[PBAltManager]|r v" .. PBAM.Version .. " — Alt management for playerbots")
+        DEFAULT_CHAT_FRAME:AddMessage("|cFFD4AF37[PBAltManager]|r v" .. PBAM.Version .. " - Alt management for playerbots")
     else
         if PBAM.MainWindow and PBAM.MainWindow:IsShown() then
             PBAM.MainWindow:Hide()
@@ -223,7 +398,20 @@ function PBAM.OpenWindow()
     end
 end
 
-function PBAM.RefreshAll()
+function PBAM.RefreshAll(force)
+    local now = GetTime and GetTime() or 0
+
+    -- Throttle refreshes unless forced
+    if not force then
+        local key = "all"
+        local last = PBAM.LastRefreshTime[key] or 0
+        if (now - last) < (REFRESH_THROTTLE_MS / 1000) then
+            PBAM.DebugPrint("RefreshAll throttled: " .. tostring(now - last) .. "s since last")
+            return
+        end
+        PBAM.LastRefreshTime[key] = now
+    end
+
     PBAM.Bridge.RequestRoster()
     PBAM.Bridge.RequestBotDetails()
     PBAM.Bridge.RequestStates()
@@ -245,6 +433,85 @@ function PBAM.RefreshTabData()
     end
 end
 
+-- Full window reset: rebuilds the window and tab panels to mimic a fresh addon session.
+function PBAM.ResetWindow()
+    local wasShown = PBAM.MainWindow and PBAM.MainWindow:IsShown()
+
+    if PBAM.Bridge then
+        PBAM.Bridge.Roster = {}
+        PBAM.Bridge.Details = {}
+        PBAM.Bridge.States = {}
+        PBAM.Bridge.Stats = {}
+        PBAM.Bridge.Inventory = {}
+        PBAM.Bridge.Bank = {}
+        PBAM.Bridge.GuildBank = {}
+        PBAM.Bridge.TalentSpecs = {}
+        PBAM.Bridge.Spells = {}
+        PBAM.Bridge.Professions = {}
+        PBAM.Bridge.Crafting = {}
+        PBAM.Bridge.Quests = {}
+        PBAM.Bridge.Reputations = {}
+        PBAM.Bridge.Emblems = {}
+        PBAM.Bridge.Glyphs = {}
+        PBAM.Bridge.Outfits = {}
+        PBAM.Bridge.Trainer = {}
+        PBAM.Bridge.GameObjects = {}
+        PBAM.Bridge.callbacks = {}
+        PBAM.Bridge._InFlightRequests = {}
+        PBAM.Bridge.Connected = false
+    end
+
+    PBAM.PendingRosterInventoryRequests = {}
+    PBAM.PendingRosterSkillRequests = {}
+    PBAM.LastRefreshTime = {}
+    PBAM.SelectedBot = nil
+    PBAM.SelectedBotLower = nil
+    PBAM.CurrentTab = nil
+    PBAM.PreviousTab = nil
+    PBAM.BotListEntries = {}
+    PBAM.BotListHeaders = {}
+
+    if PBAM.MainWindow then
+        PBAM.MainWindow:Hide()
+        PBAM.MainWindow:SetParent(nil)
+    end
+
+    PBAM.MainWindow = nil
+    PBAM.ContentFrame = nil
+    PBAM.TabDropdown = nil
+    PBAM.BotListContent = nil
+    PBAM.BotListScroll = nil
+    PBAM.SearchBox = nil
+    PBAM.ClearSelectionButton = nil
+
+    if PBAM.Tabs then
+        for _, tab in pairs(PBAM.Tabs) do
+            tab.panel = nil
+        end
+    end
+
+    PBAM.RegisterCoreBridgeCallbacks()
+    PBAM.CreateMainWindow()
+    if wasShown ~= false and PBAM.MainWindow then PBAM.MainWindow:Show() end
+
+    if PBAM.Bridge then
+        PBAM.Bridge.SendHello()
+        PBAM.Bridge.RequestRoster()
+        PBAM.Bridge.RequestBotDetails()
+        PBAM.Bridge.RequestStates()
+        PBAM.Bridge.RequestStats()
+    end
+
+    PBAM.After(7.0, function() PBAM.RefreshAll() end)
+    -- The first bridge responses can arrive before details/stats finish populating.
+    -- Queue a couple of UI passes so remembered roster sorting, class colors, and
+    -- class icons settle without requiring a manual Refresh click.
+    --if PBAM.After then
+    --    PBAM.After(0.25, function() if PBAM.RefreshRosterDisplay then PBAM.RefreshRosterDisplay() end end)
+    --    PBAM.After(0.75, function() if PBAM.RefreshRosterDisplay then PBAM.RefreshRosterDisplay() end end)
+    --end
+end
+
 -- ── Window Creation ─────────────────────────────────────────
 
 local WND_W = 980
@@ -255,11 +522,34 @@ local TAB_BAR_H = 30
 local BORDER = 4
 local BG_TEXTURE = "Interface\\Buttons\\WHITE8x8"
 
+function PBAM.SaveMainWindowPosition()
+    local window = PBAM.MainWindow
+    if not window or not window.GetPoint then return end
+    PBAMConfig.MainWindow = PBAMConfig.MainWindow or {}
+    local point, _, relativePoint, xOfs, yOfs = window:GetPoint(1)
+    PBAMConfig.MainWindow.point = point or "CENTER"
+    PBAMConfig.MainWindow.relativePoint = relativePoint or point or "CENTER"
+    PBAMConfig.MainWindow.x = tonumber(xOfs) or 0
+    PBAMConfig.MainWindow.y = tonumber(yOfs) or 0
+end
+
+function PBAM.ApplyMainWindowPosition(window)
+    if not window then return end
+    local cfg = PBAMConfig.MainWindow or {}
+    window:ClearAllPoints()
+    if cfg.point and cfg.relativePoint and cfg.x and cfg.y then
+        window:SetPoint(cfg.point, UIParent, cfg.relativePoint, tonumber(cfg.x) or 0, tonumber(cfg.y) or 0)
+    else
+        window:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    end
+end
+
 function PBAM.CreateMainWindow()
     -- ── Main window ──────────────────────────────────
-    local window = CreateFrame("Frame", "PBAMMainWindow", UIParent)
+    PBAM._WindowCounter = (PBAM._WindowCounter or 0) + 1
+    local window = CreateFrame("Frame", "PBAMMainWindow" .. tostring(PBAM._WindowCounter), UIParent)
     window:SetSize(WND_W, WND_H)
-    window:SetPoint("CENTER", UIParent, "CENTER")
+    PBAM.ApplyMainWindowPosition(window)
     window:SetFrameStrata("DIALOG")
     window:SetMovable(true)
     window:SetClampedToScreen(true)
@@ -288,6 +578,7 @@ function PBAM.CreateMainWindow()
     end)
     titleBar:SetScript("OnDragStop", function()
         window:StopMovingOrSizing()
+        PBAM.SaveMainWindowPosition()
         if PBAM.OnWindowDragStop then PBAM.OnWindowDragStop() end
     end)
 
@@ -362,19 +653,29 @@ function PBAM.CreateMainWindow()
     clearBtn:SetNormalTexture("Interface\\Buttons\\UI-StopButton")
     clearBtn:SetHighlightTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Highlight", "ADD")
     clearBtn:SetScript("OnClick", function()
-        -- Clear all tabs' content by calling OnBotSelect(nil) where available
-        for name, tab in pairs(PBAM.Tabs) do
+        if IsShiftKeyDown and IsShiftKeyDown() then
+            -- Full reset: clears all cached data and re-initializes like a fresh load
+            PBAM.ResetWindow()
+            return
+        end
+
+        -- Normal click: only deselect the current bot and return to the empty roster view.
+        for _, tab in pairs(PBAM.Tabs or {}) do
             if tab.panel and tab.panel.OnBotSelect then
                 tab.panel.OnBotSelect(nil)
             end
         end
         PBAM.SelectBot(nil)
-        if PBAM.SwitchTab and PBAM.Tabs["Roster"] then PBAM.SwitchTab("Roster") end
-        PBAM.RefreshRosterDisplay()
+        if PBAM.SwitchTab and PBAM.Tabs and PBAM.Tabs["Roster"] then PBAM.SwitchTab("Roster") end
+        if PBAM.RefreshRosterDisplay then PBAM.RefreshRosterDisplay() end
     end)
     clearBtn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText("Press this to unselect any bot/clear selected bot", 1, 0.82, 0.22, true)
+        GameTooltip:SetText("Clear Selection", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("Click: deselect current bot", 0.8, 0.8, 0.8, true)
+        GameTooltip:AddLine("Shift-click: full PBAM reset", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("WARNING!", 1, 0, 0, true)
+        GameTooltip:AddLine("Shift-click reset may hang the client for 15-20 seconds.", 1, 0.82, 0.22, true)
         GameTooltip:Show()
     end)
     clearBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -389,7 +690,12 @@ function PBAM.CreateMainWindow()
     botListFrame:SetScript("OnMouseWheel", function(self, delta)
         local cur = self:GetVerticalScroll()
         local maxScroll = self:GetVerticalScrollRange()
-        self:SetVerticalScroll(math.max(0, math.min(maxScroll, cur - delta * 20)))
+        -- Increase scroll speed when in Professions tab with profession sort (more rows to scroll)
+        local scrollMult = 1.0
+        if PBAM.CurrentTab == "Professions" and PBAM.GetActiveRosterSortMode and PBAM.GetActiveRosterSortMode() == "profession" then
+            scrollMult = 3.0  -- 3x faster scrolling
+        end
+        self:SetVerticalScroll(math.max(0, math.min(maxScroll, cur - delta * 20 * scrollMult)))
     end)
 
     local botListContent = CreateFrame("Frame", nil, botListFrame)
@@ -410,7 +716,8 @@ function PBAM.CreateMainWindow()
     searchLabel:SetText("Filter:")
     searchLabel:SetTextColor(0.55, 0.55, 0.55, 1.0)
 
-    PBAM.SearchBox = CreateFrame("EditBox", "PBAMSearchEditBox", searchFrame, "InputBoxTemplate")
+    PBAM._SearchBoxCounter = (PBAM._SearchBoxCounter or 0) + 1
+    PBAM.SearchBox = CreateFrame("EditBox", "PBAMSearchEditBox" .. tostring(PBAM._SearchBoxCounter), searchFrame, "InputBoxTemplate")
     PBAM.SearchBox:SetAutoFocus(false)
     PBAM.SearchBox:SetWidth(75)
     PBAM.SearchBox:SetHeight(22)
@@ -428,32 +735,27 @@ function PBAM.CreateMainWindow()
     end)
 
     local sortDropdown = PBAM.CreateDropdown(searchFrame, {})
-    sortDropdown:SetPoint("LEFT", PBAM.SearchBox, "RIGHT", -2, -2)
-    UIDropDownMenu_SetWidth(sortDropdown, 78)
+    sortDropdown:SetPoint("LEFT", PBAM.SearchBox, "RIGHT", -16, -2)
+    UIDropDownMenu_SetWidth(sortDropdown, 64)
     UIDropDownMenu_SetButtonWidth(sortDropdown, 94)
 
-    local sortValues = {}
-    for _, entry in ipairs(PBAM.GetRosterSortOptions()) do
-        table.insert(sortValues, {
-            value = entry.value,
-            label = entry.label,
-            tooltip = entry.tooltip,
-            onSelect = function(value)
-                PBAM.SetRosterSortMode(value)
-            end,
-        })
-    end
-    sortDropdown:SetValues(sortValues)
-    sortDropdown:SetValue(PBAM.GetRosterSortMode())
     PBAM.RosterSortDropdown = sortDropdown
+    PBAM.UpdateRosterSortDropdown()
 
     local refreshBtn = CreateFrame("Button", nil, searchFrame, "UIPanelButtonTemplate")
     refreshBtn:SetSize(54, 20)
-    refreshBtn:SetPoint("LEFT", sortDropdown, "RIGHT", -2, 0)
+    refreshBtn:SetPoint("LEFT", sortDropdown, "RIGHT", -16, 2)
     refreshBtn:SetText("Refresh")
     refreshBtn:SetScript("OnClick", function()
         PBAM.RefreshAll()
     end)
+    refreshBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Refresh All Data", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("Request fresh data for roster, details, states, and stats.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    refreshBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     -- ── Right panel (tabs + content) ─────────────────
     local rightPanel = CreateFrame("Frame", nil, window)
@@ -512,7 +814,7 @@ function PBAM.CreateMainWindow()
         else
             PBAM.DebugPrint("Build Tab Panels: ERROR - buildFunc is nil for " .. name)
         end
-        
+
         PBAM.DebugPrint("CreateMainWindow: tab " .. name .. " OnBotSelect=" .. tostring(tabPanel.OnBotSelect))
     end
 
@@ -601,12 +903,19 @@ function PBAM.SwitchTab(tabName)
         return
     end
 
+    local previousTab = PBAM.CurrentTab
+    local previousSortMode = PBAM.GetActiveRosterSortMode and PBAM.GetActiveRosterSortMode() or PBAM.GetRosterSortMode()
     local tab = PBAM.Tabs[tabName]
     if not tab then return end
 
-    PBAM.PreviousTab = PBAM.CurrentTab
+    PBAM.PreviousTab = previousTab
     PBAM.CurrentTab = tabName
+    local storedSortMode = PBAM.GetStoredRosterSortMode and PBAM.GetStoredRosterSortMode(tabName) or PBAM.GetRosterSortMode()
+    local newSortMode = PBAM.GetAppropriateRosterSortMode and PBAM.GetAppropriateRosterSortMode(tabName, storedSortMode) or storedSortMode
+    if PBAMConfig.RosterSortByTab then PBAMConfig.RosterSortByTab[tabName] = newSortMode end
+    PBAMConfig.RosterSort = newSortMode
     PBAM.UpdateTabButtonStyles()
+    if PBAM.UpdateRosterSortDropdown then PBAM.UpdateRosterSortDropdown() end
 
     -- Show current tab's panel
     if tab.panel then
@@ -628,6 +937,10 @@ function PBAM.SwitchTab(tabName)
             tab.panel.OnBotSelect(PBAM.SelectedBot)
         end
     end
+
+    if previousSortMode ~= newSortMode and PBAM.RefreshRosterDisplay then
+        PBAM.RefreshRosterDisplay()
+    end
 end
 
 -- ── Bot Selection ───────────────────────────────────────────
@@ -640,8 +953,11 @@ function PBAM.SelectBot(botName)
     PBAM.DebugPrint("SelectBot called: " .. tostring(botName) .. " CurrentTab=" .. tostring(PBAM.CurrentTab))
 
     for key, e in pairs(PBAM.BotListEntries or {}) do
-        if e.bg then
-            e.bg:SetVertexColor(key == PBAM.SelectedBotLower and 0.18 or 0.06, key == PBAM.SelectedBotLower and 0.16 or 0.06, key == PBAM.SelectedBotLower and 0.10 or 0.08, key == PBAM.SelectedBotLower and 0.95 or 0.90)
+        local list = e.frame and { e } or e
+        for _, row in ipairs(list or {}) do
+            if row.bg then
+                row.bg:SetVertexColor(key == PBAM.SelectedBotLower and 0.18 or 0.06, key == PBAM.SelectedBotLower and 0.16 or 0.06, key == PBAM.SelectedBotLower and 0.10 or 0.08, key == PBAM.SelectedBotLower and 0.95 or 0.90)
+            end
         end
     end
 
@@ -675,10 +991,13 @@ function PBAM.RefreshRosterDisplay()
     end
     for _, entry in ipairs(PBAM.Bridge.Roster or {}) do table.insert(roster, entry) end
     local search = string.lower(PBAM.SearchBox and PBAM.SearchBox:GetText() or "")
-    local sortMode = PBAM.GetRosterSortMode()
+    local sortMode = PBAM.GetActiveRosterSortMode()
 
     for _, entry in pairs(PBAM.BotListEntries or {}) do
-        if entry.frame and entry.frame:IsShown() then entry.frame:Hide() end
+        local list = entry.frame and { entry } or entry
+        for _, row in ipairs(list or {}) do
+            if row.frame and row.frame:IsShown() then row.frame:Hide() end
+        end
     end
     for _, header in ipairs(PBAM.BotListHeaders or {}) do
         if header and header:IsShown() then header:Hide() end
@@ -692,6 +1011,141 @@ function PBAM.RefreshRosterDisplay()
         return
     end
 
+    local missingInventoryNames = {}
+    local missingSkillNames = {}
+    local now = GetTime and GetTime() or 0
+
+    local function BuildProfessionEntry(name, rank, maxRank, skillLine, bucket)
+        if not name or name == "" then return nil end
+        return {
+            id = tonumber(skillLine) or 0,
+            name = name,
+            displayName = name,
+            value = tonumber(rank) or 0,
+            max = tonumber(maxRank) or 0,
+            bucket = bucket,
+        }
+    end
+
+    -- WotLK 3.3.5a profession categories (with common name variations)
+    local PRIMARY_PROFESSIONS = {
+        alchemy=true, blacksmithing=true, enchanting=true, engineering=true, herbalism=true,
+        inscription=true, jewelcrafting=true, leatherworking=true, mining=true, skinning=true, tailoring=true
+    }
+    local SECONDARY_PROFESSIONS = {
+        cooking=true, fishing=true, ["first aid"]=true, firstaid=true, ["first_aid"]=true
+    }
+
+    local function GetPlayerProfessions()
+        local primary, secondary = {}, {}
+        if not GetProfessions or not GetProfessionInfo then return primary, secondary end
+        local p1, p2, fishing, cooking, firstAid = GetProfessions()
+        for _, skillIndex in ipairs({ p1, p2 }) do
+            if skillIndex then
+                local name, _, rank, maxRank, _, _, skillLine = GetProfessionInfo(skillIndex)
+                local profession = BuildProfessionEntry(name, rank, maxRank, skillLine, "primary")
+                if profession then table.insert(primary, profession) end
+            end
+        end
+        for _, skillIndex in ipairs({ fishing, cooking, firstAid }) do
+            if skillIndex then
+                local name, _, rank, maxRank, _, _, skillLine = GetProfessionInfo(skillIndex)
+                local profession = BuildProfessionEntry(name, rank, maxRank, skillLine, "secondary")
+                if profession then table.insert(secondary, profession) end
+            end
+        end
+        return primary, secondary
+    end
+
+    local function GetEntryProfessions(entry)
+        if not entry then return {}, {} end
+        if entry.isPlayer then return GetPlayerProfessions() end
+        local key = string.lower(tostring(entry.name or ""))
+        -- Check both Professions (from BOT_SKILLS) and Crafting (from PROFESSION command)
+        local skills = PBAM.Bridge and PBAM.Bridge.Professions and PBAM.Bridge.Professions[key] or nil
+        local crafting = PBAM.Bridge and PBAM.Bridge.Crafting and PBAM.Bridge.Crafting[key] or nil
+
+        if not skills and not crafting then
+            if sortMode == "profession" and PBAM.CurrentTab == "Professions" and PBAM.Bridge and PBAM.Bridge.RequestBotSkills then
+                -- Always queue this bot for skills request (we want ALL bots eventually)
+                table.insert(missingSkillNames, entry.name)
+            end
+            return {}, {}
+        end
+
+        -- Merge primary and secondary from both sources
+        local primary = {}
+        local secondary = {}
+
+        if skills then
+            for _, prof in ipairs(skills.primary or {}) do table.insert(primary, prof) end
+            for _, prof in ipairs(skills.secondary or {}) do table.insert(secondary, prof) end
+        end
+
+        -- Also check crafting data for additional professions
+        if crafting and crafting.professions then
+            for name, data in pairs(crafting.professions) do
+                local k = string.lower(tostring(name or "")):gsub("%s+", ""):gsub("_", " ")
+                -- Determine if primary or secondary based on profession name
+                local isSecondary = SECONDARY_PROFESSIONS[k] or false
+                local bucket = isSecondary and secondary or primary
+                -- Check if we already have this profession from skills data
+                local alreadyHave = false
+                for _, p in ipairs(bucket) do
+                    local existingKey = string.lower(p.name or ""):gsub("%s+", ""):gsub("_", " ")
+                    if existingKey == k then alreadyHave = true break end
+                end
+                if not alreadyHave then
+                    -- Normalize the profession name for display
+                    local displayName = name
+                    if k == "first aid" or k == "firstaid" or k == "first_aid" then
+                        displayName = "First Aid"
+                    elseif k == "cooking" then
+                        displayName = "Cooking"
+                    elseif k == "fishing" then
+                        displayName = "Fishing"
+                    end
+                    local prof = BuildProfessionEntry(displayName, data.level or 0, data.max or 75, 0, isSecondary and "secondary" or "primary")
+                    if prof then table.insert(bucket, prof) end
+                end
+            end
+        end
+
+        return primary, secondary
+    end
+
+    local function GetEntryFreeBagSpace(entry)
+        if not entry then return math.huge end
+        if entry.isPlayer then
+            local free, total = 0, 0
+            if GetContainerNumFreeSlots and GetContainerNumSlots then
+                for bag = 0, 4 do
+                    local bagFree = select(1, GetContainerNumFreeSlots(bag))
+                    free = free + (tonumber(bagFree) or 0)
+                    total = total + (tonumber(GetContainerNumSlots(bag)) or 0)
+                end
+            end
+            entry._bagUsed = math.max(0, total - free)
+            entry._bagTotal = total
+            return free
+        end
+        local key = string.lower(tostring(entry.name or ""))
+        local inv = PBAM.Bridge and PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key] or nil
+        if not inv then
+            if sortMode == "bagspace" and PBAM.CurrentTab == "Inventory" and PBAM.Bridge and PBAM.Bridge.RequestInventory then
+                -- Always queue this bot for inventory request (we want ALL bots eventually)
+                table.insert(missingInventoryNames, entry.name)
+            end
+            entry._bagUsed = 0
+            entry._bagTotal = 0
+            return math.huge
+        end
+        entry._bagUsed = tonumber(inv.bagUsed) or 0
+        entry._bagTotal = tonumber(inv.bagTotal) or 0
+        if inv.loading then return math.huge end
+        return math.max(0, entry._bagTotal - entry._bagUsed)
+    end
+
     local filteredPlayer, filtered = nil, {}
     for _, entry in ipairs(roster) do
         local name = entry.name or ""
@@ -700,7 +1154,51 @@ function PBAM.RefreshRosterDisplay()
             entry.className = entry.className or PBAM.GetBotClassName(name)
             entry.level = entry.level or 0
             entry.role = PBAM.GetRosterRole(entry)
+            entry._freeBagSpace = nil
+            entry._primaryProfessions = nil
+            entry._secondaryProfessions = nil
+            if sortMode == "bagspace" then entry._freeBagSpace = GetEntryFreeBagSpace(entry) end
+            if sortMode == "profession" then
+                entry._primaryProfessions, entry._secondaryProfessions = GetEntryProfessions(entry)
+            end
             if entry.isPlayer then filteredPlayer = entry else table.insert(filtered, entry) end
+        end
+    end
+
+    -- Send requests for any bots that were queued this cycle, respecting throttle limits
+    -- Clean up stale pending entries first (TTL expired)
+    for key, sentAt in pairs(PBAM.PendingRosterInventoryRequests) do
+        if (now - tonumber(sentAt)) >= ROSTER_SORT_REQUEST_TTL then
+            PBAM.PendingRosterInventoryRequests[key] = nil
+        end
+    end
+    for key, sentAt in pairs(PBAM.PendingRosterSkillRequests) do
+        if (now - tonumber(sentAt)) >= ROSTER_SORT_REQUEST_TTL then
+            PBAM.PendingRosterSkillRequests[key] = nil
+        end
+    end
+
+    if sortMode == "bagspace" and PBAM.CurrentTab == "Inventory" and PBAM.Bridge and PBAM.Bridge.RequestInventory then
+        local sentCount = 0
+        for _, name in ipairs(missingInventoryNames) do
+            if sentCount >= ROSTER_SORT_MAX_INFLIGHT then break end
+            local key = string.lower(tostring(name or ""))
+            if key ~= "" and not PBAM.PendingRosterInventoryRequests[key] then
+                PBAM.PendingRosterInventoryRequests[key] = now
+                PBAM.Bridge.RequestInventory(name)
+                sentCount = sentCount + 1
+            end
+        end
+    elseif sortMode == "profession" and PBAM.CurrentTab == "Professions" and PBAM.Bridge and PBAM.Bridge.RequestBotSkills then
+        local sentCount = 0
+        for _, name in ipairs(missingSkillNames) do
+            if sentCount >= ROSTER_SORT_MAX_INFLIGHT then break end
+            local key = string.lower(tostring(name or ""))
+            if key ~= "" and not PBAM.PendingRosterSkillRequests[key] then
+                PBAM.PendingRosterSkillRequests[key] = now
+                PBAM.Bridge.RequestBotSkills(name)
+                sentCount = sentCount + 1
+            end
         end
     end
 
@@ -715,40 +1213,98 @@ function PBAM.RefreshRosterDisplay()
         return g
     end
 
-    for _, entry in ipairs(filtered) do
+    local function AddEntryToGroups(entry)
         local group
         if sortMode == "class" then
             local className = tostring(entry.className or "") ~= "" and tostring(entry.className) or "Unknown"
             group = ensureGroup(string.lower(className), className, 1000)
+            table.insert(group.entries, entry)
         elseif sortMode == "level" then
             local level = tonumber(entry.level) or 0
             group = ensureGroup("lvl:" .. tostring(level), "Level " .. tostring(level), level)
+            table.insert(group.entries, entry)
         elseif sortMode == "role" then
             local role = tostring(entry.role or "Unknown")
             local normalized = role == "Tank/DPS" and "DPS" or role
             group = ensureGroup(string.lower(normalized), normalized, ROLE_SORT_ORDER[normalized] or 9999)
+            table.insert(group.entries, entry)
+        elseif sortMode == "profession" then
+            local hasAnyProfession = false
+            local function addProfessionGroups(professions, bucketLabel, bucketOrder)
+                for _, profession in ipairs(professions or {}) do
+                    hasAnyProfession = true
+                    -- Normalize profession name capitalization
+                    local label = tostring(profession.displayName or profession.name or "Unknown")
+                    -- Handle common variations like "firstaid", "first_aid" -> "First Aid"
+                    local normalizedForCheck = string.lower(label:gsub("%s+", ""):gsub("_", " "))
+                    if SECONDARY_PROFESSIONS[normalizedForCheck] then
+                        if normalizedForCheck == "first aid" or normalizedForCheck == "firstaid" or normalizedForCheck == "first_aid" then
+                            label = "First Aid"
+                        elseif normalizedForCheck == "cooking" then
+                            label = "Cooking"
+                        elseif normalizedForCheck == "fishing" then
+                            label = "Fishing"
+                        end
+                    elseif PRIMARY_PROFESSIONS[normalizedForCheck] then
+                        -- Capitalize first letter of each word for primary professions
+                        label = string.gsub(string.lower(label), "%a", function(c) return string.upper(c) end, 1)
+                    end
+                    group = ensureGroup("profession:" .. string.lower(bucketLabel) .. ":" .. string.lower(label), label, 1000 + bucketOrder)
+                    group.mainHeader = bucketLabel
+                    group.mainOrder = bucketOrder
+                    group.subHeader = label
+                    table.insert(group.entries, { source = entry, profession = profession })
+                end
+            end
+            addProfessionGroups(entry._primaryProfessions or {}, "Primary", 1)
+            addProfessionGroups(entry._secondaryProfessions or {}, "Secondary", 2)
+        elseif sortMode == "bagspace" then
+            group = ensureGroup("bagspace", "Free Bag Space", 1)
+            table.insert(group.entries, entry)
         else
             group = ensureGroup("alpha", "Alphabetical", 1)
+            table.insert(group.entries, entry)
         end
-        table.insert(group.entries, entry)
     end
 
+    if filteredPlayer and (sortMode == "profession" or sortMode == "bagspace") then AddEntryToGroups(filteredPlayer) end
+    for _, entry in ipairs(filtered) do AddEntryToGroups(entry) end
+
     table.sort(groupOrder, function(a, b)
+        if sortMode == "profession" then
+            local aMain, bMain = tonumber(a.mainOrder) or 9999, tonumber(b.mainOrder) or 9999
+            if aMain ~= bMain then return aMain < bMain end
+        end
         if a.order ~= b.order then return a.order < b.order end
         return string.lower(a.label or "") < string.lower(b.label or "")
     end)
     for _, group in ipairs(groupOrder) do
         table.sort(group.entries, function(a, b)
+            if sortMode == "profession" then
+                local aEntry, bEntry = a.source or a, b.source or b
+                local aSkill = tonumber(a.profession and a.profession.value) or 0
+                local bSkill = tonumber(b.profession and b.profession.value) or 0
+                if aSkill ~= bSkill then return aSkill > bSkill end
+                return string.lower(aEntry.name or "") < string.lower(bEntry.name or "")
+            elseif sortMode == "bagspace" then
+                local aFree = tonumber(a._freeBagSpace) or math.huge
+                local bFree = tonumber(b._freeBagSpace) or math.huge
+                if aFree ~= bFree then return aFree < bFree end
+                return string.lower(a.name or "") < string.lower(b.name or "")
+            end
             return string.lower(a.name or "") < string.lower(b.name or "")
         end)
     end
 
-    local rowH, headerH = 28, 20
+    local rowH, headerH, mainHeaderH = 28, 20, 20
     local rowY = -4
     local SIDEBAR_W = 250
     local renderedRows = 0
 
     local function RenderRosterRow(entry)
+        local rowEntry = entry
+        local profession = rowEntry and rowEntry.profession or nil
+        entry = rowEntry.source or rowEntry
         local name = entry.name or ""
         local lower = string.lower(name)
         local className = entry.className or ""
@@ -765,7 +1321,8 @@ function PBAM.RefreshRosterDisplay()
         local bg = rowFrame:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
         bg:SetTexture(BG_TEXTURE)
-        bg:SetVertexColor(0.12, 0.11, 0.09, 1.0)
+        local selected = lower == PBAM.SelectedBotLower
+        bg:SetVertexColor(selected and 0.18 or 0.12, selected and 0.16 or 0.11, selected and 0.10 or 0.09, selected and 0.95 or 1.0)
         bg:Show()
         rowFrame.bg = bg
 
@@ -796,7 +1353,19 @@ function PBAM.RefreshRosterDisplay()
 
         local levelFs = rowFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         levelFs:SetPoint("RIGHT", rowFrame, "RIGHT", -8, 0)
-        levelFs:SetText("Lv." .. level)
+        if sortMode == "bagspace" then
+            local used = tonumber(entry._bagUsed) or 0
+            local total = tonumber(entry._bagTotal) or 0
+            local free = tonumber(entry._freeBagSpace)
+            if free == nil or free == math.huge then free = math.max(0, total - used) end
+            levelFs:SetPoint("RIGHT", rowFrame, "RIGHT", -60, 0)
+            levelFs:SetText(string.format("%d/%d", free, total))
+        elseif sortMode == "profession" and profession then
+            levelFs:SetPoint("RIGHT", rowFrame, "RIGHT", -60, 0)
+            levelFs:SetText(string.format("%d/%d", tonumber(profession.value) or 0, tonumber(profession.max) or 0))
+        else
+            levelFs:SetText("Lv." .. level)
+        end
         levelFs:SetTextColor(0.55, 0.55, 0.55, 1.0)
 
         local dot = rowFrame:CreateTexture(nil, "OVERLAY")
@@ -809,18 +1378,67 @@ function PBAM.RefreshRosterDisplay()
             if btn == "LeftButton" then PBAM.SelectBot(name) end
         end)
 
-        PBAM.BotListEntries[lower] = { frame = rowFrame, bg = bg }
+        PBAM.BotListEntries[lower] = PBAM.BotListEntries[lower] or {}
+        table.insert(PBAM.BotListEntries[lower], { frame = rowFrame, bg = bg })
         rowY = rowY - rowH
         renderedRows = renderedRows + 1
     end
 
-    if filteredPlayer then
+    if filteredPlayer and sortMode ~= "profession" and sortMode ~= "bagspace" then
         RenderRosterRow(filteredPlayer)
     end
 
+    local lastMainHeader = nil
+    local seenProfessions = {}  -- Track which professions we've already shown headers for
     for _, group in ipairs(groupOrder) do
         if #group.entries > 0 then
-            if sortMode ~= "alpha" then
+            if sortMode == "profession" then
+                if group.mainHeader ~= lastMainHeader then
+                    local mainHeader = CreateFrame("Frame", nil, content)
+                    mainHeader:SetHeight(mainHeaderH)
+                    mainHeader:SetWidth(SIDEBAR_W - 20)
+                    mainHeader:SetPoint("TOPLEFT", content, "TOPLEFT", 8, rowY)
+                    table.insert(PBAM.BotListHeaders, mainHeader)
+
+                    local mainHeaderBg = mainHeader:CreateTexture(nil, "BACKGROUND")
+                    mainHeaderBg:SetAllPoints()
+                    mainHeaderBg:SetTexture(BG_TEXTURE)
+                    mainHeaderBg:SetVertexColor(0.22, 0.18, 0.12, 0.98)
+
+                    local mainHeaderFs = mainHeader:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                    mainHeaderFs:SetPoint("LEFT", mainHeader, "LEFT", 8, 0)
+                    mainHeaderFs:SetText(group.mainHeader)
+                    mainHeaderFs:SetTextColor(1.0, 0.82, 0.24, 1.0)
+
+                    rowY = rowY - mainHeaderH
+                    renderedRows = renderedRows + 1
+                    lastMainHeader = group.mainHeader
+                end
+
+                -- Only show sub-header if we haven't shown this profession yet in this main section
+                local professionKey = group.mainHeader .. ":" .. group.subHeader
+                if not seenProfessions[professionKey] then
+                    seenProfessions[professionKey] = true
+                    local header = CreateFrame("Frame", nil, content)
+                    header:SetHeight(headerH)
+                    header:SetWidth(SIDEBAR_W - 20)
+                    header:SetPoint("TOPLEFT", content, "TOPLEFT", 8, rowY)
+                    table.insert(PBAM.BotListHeaders, header)
+
+                    local headerBg = header:CreateTexture(nil, "BACKGROUND")
+                    headerBg:SetAllPoints()
+                    headerBg:SetTexture(BG_TEXTURE)
+                    headerBg:SetVertexColor(0.18, 0.15, 0.10, 0.95)
+
+                    local headerFs = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                    headerFs:SetPoint("LEFT", header, "LEFT", 16, 0)
+                    headerFs:SetText(group.subHeader .. ":")
+                    headerFs:SetTextColor(0.83, 0.69, 0.22, 1.0)
+
+                    rowY = rowY - headerH
+                    renderedRows = renderedRows + 1
+                end
+            elseif sortMode ~= "alpha" and sortMode ~= "bagspace" then
                 local header = CreateFrame("Frame", nil, content)
                 header:SetHeight(headerH)
                 header:SetWidth(SIDEBAR_W - 20)
@@ -850,7 +1468,7 @@ function PBAM.RefreshRosterDisplay()
     local totalHeight = math.max(50, -rowY + 8)
     content:SetHeight(totalHeight)
     PBAM.BotListScroll:SetScrollChild(content)
-    if PBAM.RosterSortDropdown then PBAM.RosterSortDropdown:SetValue(sortMode) end
+    if PBAM.UpdateRosterSortDropdown then PBAM.UpdateRosterSortDropdown() end
     PBAM.UpdateConnectionDot()
 end
 

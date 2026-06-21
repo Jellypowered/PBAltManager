@@ -37,6 +37,7 @@ Bridge.callbacks     = {}
 Bridge.Connected     = false
 Bridge.Server        = nil
 Bridge.Protocol      = nil
+Bridge._InFlightRequests = {}  -- Track in-flight requests to prevent duplicates
 
 -- Class ID lookup (WotLK)
 Bridge.ClassById = {
@@ -61,11 +62,20 @@ function Bridge.FireCallback(event, ...)
     local handlers = Bridge.callbacks[event]
     Bridge.DebugPrint("[FireCallback DEBUG] event=" .. tostring(event) .. " handlers=" .. tostring(handlers and #handlers or 0))
     if not handlers then Bridge.DebugPrint("[FireCallback DEBUG] NO HANDLERS FOR " .. event); return end
-    for i, func in ipairs(handlers) do
-        Bridge.DebugPrint("[FireCallback DEBUG] Calling handler " .. i .. " for " .. event)
-        local ok, err = pcall(func, ...)
-        if not ok and type(PBAM.LogError) == "function" then
-            PBAM.LogError("CB:" .. tostring(err))
+
+    local i = 1
+    while i <= #handlers do
+        local func = handlers[i]
+        if type(func) ~= "function" then
+            table.remove(handlers, i)
+            Bridge.DebugPrint("[FireCallback] Removed stale handler " .. i .. " for " .. event)
+        else
+            Bridge.DebugPrint("[FireCallback DEBUG] Calling handler " .. i .. " for " .. event)
+            local ok, err = pcall(func, ...)
+            if not ok then
+                if type(PBAM.LogError) == "function" then PBAM.LogError("CB:" .. tostring(err)) end
+            end
+            i = i + 1
         end
     end
 end
@@ -151,13 +161,64 @@ function Bridge.RequestBotDetail(bot) Bridge.Send("GET", "DETAIL~" .. bot) end
 function Bridge.RequestBotDetails()   Bridge.Send("GET", "DETAILS") end
 function Bridge.RequestStats(bot)     Bridge.Send("GET", "STATS" .. (bot and "~" .. bot or "")) end
 function Bridge.RequestPvpStats(bot)  Bridge.Send("GET", "PVP_STATS" .. (bot and "~" .. bot or "")) end
-function Bridge.RequestInventory(bot) local t=makeToken("inv"); Bridge.Send("GET", "INVENTORY~" .. urlEncode(bot) .. "~" .. t); return t end
-function Bridge.RequestBank(bot)      local t=makeToken("bank"); Bridge.Send("GET", "BANK~" .. urlEncode(bot) .. "~" .. t); return t end
-function Bridge.RequestGuildBank(bot) local t=makeToken("gbank"); Bridge.Send("GET", "GBANK~" .. urlEncode(bot) .. "~" .. t); return t end
+function Bridge.RequestInventory(bot)
+    if not bot or bot == "" then return nil end
+    local key = "INV~" .. string.lower(tostring(bot))
+    local now = GetTime and GetTime() or 0
+    -- Check if request is already in flight (within 3s window)
+    if Bridge._InFlightRequests[key] and (now - Bridge._InFlightRequests[key]) < 3.0 then
+        PBAM.DebugPrint("RequestInventory throttled: " .. bot .. " already in flight")
+        return nil
+    end
+    Bridge._InFlightRequests[key] = now
+    local t=makeToken("inv"); Bridge.Send("GET", "INVENTORY~" .. urlEncode(bot) .. "~" .. t); return t 
+end
+function Bridge.RequestBank(bot)
+    if not bot or bot == "" then return nil end
+    local key = "BANK~" .. string.lower(tostring(bot))
+    local now = GetTime and GetTime() or 0
+    if Bridge._InFlightRequests[key] and (now - Bridge._InFlightRequests[key]) < 3.0 then
+        PBAM.DebugPrint("RequestBank throttled: " .. bot .. " already in flight")
+        return nil
+    end
+    Bridge._InFlightRequests[key] = now
+    local t=makeToken("bank"); Bridge.Send("GET", "BANK~" .. urlEncode(bot) .. "~" .. t); return t 
+end
+function Bridge.RequestGuildBank(bot)
+    if not bot or bot == "" then return nil end
+    local key = "GBANK~" .. string.lower(tostring(bot))
+    local now = GetTime and GetTime() or 0
+    if Bridge._InFlightRequests[key] and (now - Bridge._InFlightRequests[key]) < 3.0 then
+        PBAM.DebugPrint("RequestGuildBank throttled: " .. bot .. " already in flight")
+        return nil
+    end
+    Bridge._InFlightRequests[key] = now
+    local t=makeToken("gbank"); Bridge.Send("GET", "GBANK~" .. urlEncode(bot) .. "~" .. t); return t 
+end
 function Bridge.RequestTalentSpecList(bot) local t=makeToken("talents"); Bridge.Send("GET", "TALENT_SPEC_LIST~" .. urlEncode(bot) .. "~" .. t); return t end
 function Bridge.RequestSpellbook(bot) local t=makeToken("spellbook"); Bridge.Send("GET", "SPELLBOOK~" .. urlEncode(bot) .. "~" .. t); return t end
-function Bridge.RequestBotSkills(bot) local t=makeToken("skills"); Bridge.Send("GET", "BOT_SKILLS~" .. urlEncode(bot) .. "~" .. t); return t end
-function Bridge.RequestBotReputations(bot) local t=makeToken("rep"); Bridge.Send("GET", "BOT_REPUTATIONS~" .. urlEncode(bot) .. "~" .. t); return t end
+function Bridge.RequestBotSkills(bot)
+    if not bot or bot == "" then return nil end
+    local key = "SKILLS~" .. string.lower(tostring(bot))
+    local now = GetTime and GetTime() or 0
+    if Bridge._InFlightRequests[key] and (now - Bridge._InFlightRequests[key]) < 3.0 then
+        PBAM.DebugPrint("RequestBotSkills throttled: " .. bot .. " already in flight")
+        return nil
+    end
+    Bridge._InFlightRequests[key] = now
+    local t=makeToken("skills"); Bridge.Send("GET", "BOT_SKILLS~" .. urlEncode(bot) .. "~" .. t); return t 
+end
+function Bridge.RequestBotReputations(bot)
+    if not bot or bot == "" then return nil end
+    local key = "REP~" .. string.lower(tostring(bot))
+    local now = GetTime and GetTime() or 0
+    if Bridge._InFlightRequests[key] and (now - Bridge._InFlightRequests[key]) < 3.0 then
+        PBAM.DebugPrint("RequestBotReputations throttled: " .. bot .. " already in flight")
+        return nil
+    end
+    Bridge._InFlightRequests[key] = now
+    local t=makeToken("rep"); Bridge.Send("GET", "BOT_REPUTATIONS~" .. urlEncode(bot) .. "~" .. t); return t 
+end
 function Bridge.RequestBotEmblems(bot)     local t=makeToken("emblem"); Bridge.Send("GET", "BOT_EMBLEMS~" .. urlEncode(bot) .. "~" .. t); return t end
 function Bridge.RequestProfessionRecipes(bot, skillId)
     local t=makeToken("recipes"); Bridge.Send("GET", "PROFESSION_RECIPES~" .. urlEncode(bot) .. "~" .. (skillId or 0) .. "~" .. t); return t
@@ -504,6 +565,7 @@ function Bridge.ApplyInventoryPayload(payload)
     elseif opcode == "INV_END" then
         inv.loading = false
         Bridge.Inventory[key] = inv
+        Bridge._InFlightRequests["INV~" .. key] = nil
         Bridge.FireCallback("InventoryUpdated", name, inv)
     end
 end
@@ -542,6 +604,7 @@ function Bridge.ApplyBankPayload(payload)
     elseif opcode == "BANK_END" then
         bank.loading = false
         Bridge.Bank[key] = bank
+        Bridge._InFlightRequests["BANK~" .. key] = nil
         Bridge.FireCallback("BankUpdated", name, bank)
     end
 end
@@ -573,6 +636,7 @@ function Bridge.ApplyGuildBankPayload(payload)
         table.insert(gbank.items, trim(parts[4]))
         Bridge.Bank[string.lower(name .. "_gbank")] = gbank
     elseif opcode == "GBANK_END" then
+        Bridge._InFlightRequests["GBANK~" .. string.lower(name)] = nil
         Bridge.FireCallback("GuildBankUpdated", name, Bridge.Bank[string.lower(name .. "_gbank")])
     end
 end
@@ -696,6 +760,7 @@ function Bridge.ApplyBotSkillsPayload(payload)
     elseif opcode == "BOT_SKILLS_END" then
         skills.loading = false
         Bridge.Professions[key] = skills
+        Bridge._InFlightRequests["SKILLS~" .. key] = nil
         Bridge.FireCallback("BotSkillsUpdated", name, skills)
     end
 end
@@ -819,6 +884,7 @@ function Bridge.ApplyBotReputationsPayload(payload)
         Bridge.BotReputations[key] = reps
     elseif opcode == "BOT_REPUTATIONS_END" then
         Bridge.BotReputations[key] = reps
+        Bridge._InFlightRequests["REP~" .. key] = nil
         Bridge.FireCallback("BotReputationsUpdated", name, reps)
     end
 end
@@ -1017,19 +1083,27 @@ function Bridge.ApplyTrainerPayload(payload)
 end
 
 function Bridge.ApplyQuestsPayload(payload)
-    -- QUESTS~Mode~BotName~Token or QUESTS_BEGIN~Mode~BotName~Token
+    -- Format: QUESTS_BEGIN~BotName~Token~Mode or QUESTS_ITEM~BotName~Token~Mode~Status~QuestId~QuestName
     local parts = {}
     for s in string.gmatch(payload or "", "[^~]+") do table.insert(parts, s) end
 
     if #parts < 3 then return end
 
     local opcode, name, token, mode
-    if tostring(parts[1]):find("^QUESTS") then
+    -- Check if first part is a QUESTS opcode (QUESTS_BEGIN, QUESTS_ITEM, QUESTS_END, QUESTS_DONE)
+    if tostring(parts[1]):find("^QUESTS_") then
         opcode = parts[1]
+        name = trim(urlDecode(parts[2]))
+        token = parts[3]
+        mode = parts[4] or "ALL"
+    -- Handle plain QUESTS format (legacy)
+    elseif tostring(parts[1]) == "QUESTS" then
+        opcode = "QUESTS_BEGIN"
         mode = trim(parts[2])
         name = trim(urlDecode(parts[3]))
         token = parts[4]
     else
+        -- Fallback: assume Mode~BotName~Token~opcode format
         mode = trim(parts[1])
         name = trim(urlDecode(parts[2]))
         token = parts[3]
@@ -1050,12 +1124,15 @@ function Bridge.ApplyQuestsPayload(payload)
         return
     end
 
-    if opcode == "QUESTS_ITEM" and #parts >= 4 then
+    if opcode == "QUESTS_ITEM" and #parts >= 7 then
+        -- Format: QUESTS_ITEM~BotName~Token~Mode~Status~QuestId~QuestName
+        local qid = tonumber(parts[6]) or 0
+        local qname = trim(urlDecode(parts[7])) or ""
         table.insert(quests.quests, {
             mode = mode,
-            status = trim(parts[3]),
-            questId = tonumber(parts[4]) or 0,
-            questName = trim(urlDecode(parts[5])) or "",
+            status = trim(parts[5]),
+            questId = qid,
+            questName = qname,
         })
         Bridge.Quests[key] = quests
     elseif opcode == "QUESTS_END" then
