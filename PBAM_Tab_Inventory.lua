@@ -157,27 +157,78 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     local tradeInitiatedAt = 0  -- timestamp when InitiateTrade was called
     local lastTabOpenInventoryRequest = 0
 
+    -- Equipped bag slots: bridge bag index 0 is backpack, 1-4 are equipped bag slots.
+    -- Keep these declared before RenderInventoryRows so bag filtering uses the real locals.
+    local bagSlots = {}
+    local selectedBagSlot = nil
+    local hoverBagSlot = nil
+    local bagsFrame
 
     -- Forward declarations for callback helpers/UI objects. Lua local scope starts
     -- at the declaration, so callbacks defined before these helpers need this.
-    local titleFs, slotsFs, goldFs, content
+    local titleFs, slotsFs, goldFs, content, statusFs
     local ClearRows, HideTargetMenu, Row, UpdateRowHighlights
-    local RenderMerchantRows
+    local RenderMerchantRows, UpdateBagSlots, GetBagName
     local RefreshMerchantView
+
+    local function NormalizeBagIndex(bagValue)
+        -- Bridge item locations may use raw AzerothCore container positions:
+        --   255 = backpack, 19-22 = equipped bag slots.
+        -- Newer/normalized packets may already use 0-4. Accept both.
+        local bag = tonumber(bagValue)
+        if bag == nil then return nil end
+        if bag == 255 then return 0 end
+        if bag >= 19 and bag <= 22 then return bag - 18 end
+        if bag >= 0 and bag <= 4 then return bag end
+        return bag
+    end
 
     -- InventoryUpdated / BankUpdated: only update the UI, do NOT re-trigger OnBotSelect.
     -- Re-triggering creates a cascade (callback → OnBotSelect → RequestInventoryRefresh)
     -- that overlaps with the initial request cycle, causing token collisions and lost data.
+    local function InventoryDisplayItems(inv)
+        if not inv then return {}, false end
+
+        local hasLocationRows = inv.itemLocations and #inv.itemLocations > 0
+        local source = hasLocationRows and inv.itemLocations or (inv.items or {})
+
+        if selectedBagSlot == nil or not hasLocationRows then
+            return source, hasLocationRows
+        end
+
+        local filtered = {}
+        for _, item in ipairs(source) do
+            if NormalizeBagIndex(item.bag) == selectedBagSlot then
+                table.insert(filtered, item)
+            end
+        end
+        return filtered, true
+    end
+
     -- Render inventory rows from bridge data (used by callbacks and OnBotSelect).
     local function RenderInventoryRows(inv, bank)
         if not inv then return false end
+        if ClearRows then ClearRows() end
+
         goldFs:SetText("Gold: " .. MoneyText(inv.goldCopper) .. (bank and bank.goldCopper and ("   Bank: " .. MoneyText(bank.goldCopper)) or ""))
         slotsFs:SetText(string.format("Bags: %d / %d", inv.bagUsed or 0, inv.bagTotal or 0))
-        if not inv.items or #inv.items == 0 then
-            local r = Row(1); r.item=nil; r.itemText=nil; r.merchantItem=nil; r.icon:SetTexture("Interface\\Icons\\INV_Box_01"); r.text:SetText("No inventory items returned."); content:SetHeight(60); return false
+
+        local displayItems, hasLocationRows = InventoryDisplayItems(inv)
+        if selectedBagSlot ~= nil and not hasLocationRows then
+            local r = Row(1); r.item=nil; r.itemText=nil; r.merchantItem=nil; r.icon:SetTexture("Interface\\Icons\\INV_Box_01"); r.text:SetText("This snapshot has no item location data, so bag filtering cannot be applied."); content:SetHeight(60); return false
         end
-        for i, item in ipairs(inv.items) do local r = Row(i); r.item=item; r.itemText=ItemText(item); r.merchantItem=nil; r.icon:SetTexture(ItemIcon(item)); r.text:SetText(ItemText(item)) end
-        UpdateRowHighlights(); content:SetHeight(20 + #inv.items * ROW_H)
+        if not displayItems or #displayItems == 0 then
+            local msg = selectedBagSlot ~= nil and (GetBagName(selectedBagSlot) .. " is empty.") or "No inventory items returned."
+            local r = Row(1); r.item=nil; r.itemText=nil; r.merchantItem=nil; r.icon:SetTexture("Interface\\Icons\\INV_Box_01"); r.text:SetText(msg); content:SetHeight(60); return false
+        end
+
+        for i, item in ipairs(displayItems) do
+            local r = Row(i)
+            r.item=item; r.itemText=ItemText(item); r.merchantItem=nil
+            r.icon:SetTexture(ItemIcon(item))
+            r.text:SetText(ItemText(item))
+        end
+        UpdateRowHighlights(); content:SetHeight(20 + #displayItems * ROW_H)
         return true
     end
     local function BuildMerchantItems()
@@ -228,6 +279,230 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         UpdateRowHighlights(); content:SetHeight(20 + #bank.items * ROW_H)
         return true
     end
+
+    -- Equipped bag slot state is declared above RenderInventoryRows.
+
+    local slotToBagIndex = { 1, 2, 3, 4, 0 } -- UI slot 5 is the backpack, far right.
+
+    local function CurrentInventory()
+        if not PBAM.SelectedBot or not PBAM.Bridge or not PBAM.Bridge.Inventory then return nil end
+        return PBAM.Bridge.Inventory[string.lower(PBAM.SelectedBot)]
+    end
+
+    local function BagTypeLabel(bagType)
+        local labels = {
+            BACKPACK = "Backpack", NORMAL = "Bag", QUIVER = "Quiver", AMMO_POUCH = "Ammo Pouch",
+            SOUL_SHARD = "Soul Bag", HERB = "Herb Bag", ENCHANTING = "Enchanting Bag",
+            MINING = "Mining Bag", ENGINEERING = "Engineering Bag", UNKNOWN = "Bag",
+        }
+        return labels[tostring(bagType or ""):upper()] or "Bag"
+    end
+
+    local function BagUsedSlots(inv, bagIndex)
+        local used = 0
+        for _, item in ipairs((inv and inv.itemLocations) or {}) do
+            if NormalizeBagIndex(item.bag) == tonumber(bagIndex) then used = used + 1 end
+        end
+        return used
+    end
+
+    local function GetBagData(inv, bagIndex)
+        if bagIndex == 0 then
+            local backpack = inv and inv.bags and inv.bags[0] or nil
+            return { bagIndex = 0, bagItemId = 0, bagLink = "", numSlots = tonumber(backpack and backpack.numSlots) or 16, bagType = "BACKPACK" }
+        end
+        return inv and inv.bags and inv.bags[bagIndex] or nil
+    end
+
+    -- Helper function to get bag name from bridge data. bagIndex: 0 = backpack, 1-4 = bag slots.
+    GetBagName = function(bagIndex)
+        local inv = CurrentInventory()
+        local bagData = GetBagData(inv, bagIndex)
+        if bagIndex == 0 then
+            return string.format("Backpack (%d/%d)", BagUsedSlots(inv, 0), tonumber(bagData.numSlots) or 16)
+        end
+        if bagData and tonumber(bagData.bagItemId or 0) > 0 then
+            local used = BagUsedSlots(inv, bagIndex)
+            return string.format("%s %d (%d/%d)", BagTypeLabel(bagData.bagType), bagIndex, used, tonumber(bagData.numSlots) or 0)
+        end
+        return "Bag Slot " .. tostring(bagIndex) .. " (empty)"
+    end
+
+    -- Create a single bag slot frame. This is deliberately just a remote snapshot;
+    -- real drag/drop needs a bridge command that targets a specific bag slot.
+    local function CreateBagSlot(slotIndex, x)
+        local slot = CreateFrame("Button", nil, bagsFrame)
+        slot:SetSize(34, 34)
+        slot:SetPoint("RIGHT", bagsFrame, "RIGHT", x, 0)
+        slot.slotIndex = slotIndex
+        slot.bagIndex = slotToBagIndex[slotIndex] or 0
+        slot:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+
+        local bg = slot:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints()
+        bg:SetTexture("Interface\\Buttons\\WHITE8x8")
+        bg:SetVertexColor(0.07, 0.07, 0.09, 0.85)
+        slot.bg = bg
+
+        local icon = slot:CreateTexture(nil, "ARTWORK")
+        icon:SetPoint("TOPLEFT", slot, "TOPLEFT", 3, -3)
+        icon:SetPoint("BOTTOMRIGHT", slot, "BOTTOMRIGHT", -3, 3)
+        icon:SetTexture("Interface\\Icons\\INV_Box_01")
+        slot.icon = icon
+
+        local border = slot:CreateTexture(nil, "BORDER")
+        border:SetAllPoints()
+        border:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+        border:SetVertexColor(0.65, 0.65, 0.65, 0.85)
+        slot.border = border
+
+        local selected = slot:CreateTexture(nil, "OVERLAY")
+        selected:SetAllPoints()
+        selected:SetTexture("Interface\\Buttons\\WHITE8x8")
+        selected:SetVertexColor(0.95, 0.72, 0.18, 0.25)
+        selected:Hide()
+        slot.selected = selected
+
+        local cap = slot:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        cap:SetPoint("BOTTOMRIGHT", slot, "BOTTOMRIGHT", -3, 2)
+        cap:SetTextColor(1, 1, 1, 0.9)
+        cap:SetText("")
+        slot.cap = cap
+
+        slot:SetScript("OnClick", function(self, button)
+            if button == "LeftButton" then
+                -- Always compare normalized numbers. Some WotLK clients/templates can hand
+                -- button scripts string-ish values after UI refreshes; without tonumber() the
+                -- second click can fail to match the already-selected bag.
+                local bagIndex = NormalizeBagIndex(self.bagIndex or ((self.slotIndex == 5) and 0 or self.slotIndex))
+                local current = NormalizeBagIndex(selectedBagSlot)
+
+                if current ~= nil and bagIndex ~= nil and current == bagIndex then
+                    selectedBagSlot = nil
+                else
+                    selectedBagSlot = bagIndex
+                end
+
+                if selectedBagSlot == nil then
+                    LogStatus(statusFs, "Bag filter removed. Showing all items.", 0.75, 0.75, 0.75)
+                else
+                    LogStatus(statusFs, "Filtering items by: " .. GetBagName(selectedBagSlot), 0.35, 0.9, 0.45)
+                end
+
+                UpdateBagSlots()
+
+                if not showingBank and PBAM.SelectedBot then
+                    local key = string.lower(PBAM.SelectedBot)
+                    local inv = PBAM.Bridge and PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
+                    local bank = PBAM.Bridge and PBAM.Bridge.Bank and PBAM.Bridge.Bank[key]
+                    if inv and not inv.loading then
+                        RenderInventoryRows(inv, bank)
+                    else
+                        UpdateRowHighlights()
+                    end
+                else
+                    UpdateRowHighlights()
+                end
+                return
+            end
+
+            if button == "RightButton" then
+                LogStatus(statusFs, "Bag drag/unequip needs backend support for a specific bag-slot move. Not faking it here.", 1, 0.7, 0.25)
+            end
+        end)
+
+        slot:SetScript("OnEnter", function(self)
+            local bagIndex = self.bagIndex or ((self.slotIndex == 5) and 0 or self.slotIndex)
+            hoverBagSlot = bagIndex
+            UpdateRowHighlights()
+
+            local inv = CurrentInventory()
+            local bagData = GetBagData(inv, bagIndex)
+            local used = BagUsedSlots(inv, bagIndex)
+            local total = tonumber(bagData and bagData.numSlots) or (bagIndex == 0 and 16 or 0)
+
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:ClearLines()
+
+            if bagIndex == 0 then
+                GameTooltip:SetText("Backpack", 1, 0.82, 0.22, true)
+                GameTooltip:AddLine(string.format("%d / %d slots used", used, total), 0.35, 0.9, 0.45, true)
+            elseif bagData and tonumber(bagData.bagItemId or 0) > 0 then
+                local linked = false
+                if bagData.bagLink and tostring(bagData.bagLink):match("|Hitem:") then
+                    GameTooltip:SetHyperlink(bagData.bagLink)
+                    linked = true
+                elseif GameTooltip.SetHyperlink then
+                    GameTooltip:SetHyperlink("item:" .. tostring(bagData.bagItemId))
+                    linked = true
+                end
+                if not linked then
+                    GameTooltip:SetText("Bag Slot " .. tostring(bagIndex), 1, 0.82, 0.22, true)
+                    GameTooltip:AddLine("Item ID: " .. tostring(bagData.bagItemId), 0.8, 0.8, 0.8, true)
+                end
+                GameTooltip:AddLine(" ")
+                GameTooltip:AddLine(string.format("Slot: Bag %d", bagIndex), 0.8, 0.8, 0.8, true)
+                GameTooltip:AddLine(string.format("%d / %d slots used", used, total), 0.35, 0.9, 0.45, true)
+                GameTooltip:AddLine("Left-click: filter this bag", 0.95, 0.8, 0.25, true)
+            else
+                GameTooltip:SetText("Bag Slot " .. tostring(bagIndex), 1, 0.82, 0.22, true)
+                GameTooltip:AddLine("Empty bag slot", 0.8, 0.8, 0.8, true)
+                GameTooltip:AddLine("Left-click: show only this slot (will be empty)", 0.95, 0.8, 0.25, true)
+            end
+
+            if selectedBagSlot == bagIndex then
+                GameTooltip:AddLine("Currently filtering this bag.", 0.35, 0.9, 0.45, true)
+            end
+            GameTooltip:Show()
+        end)
+
+        slot:SetScript("OnLeave", function()
+            hoverBagSlot = nil
+            UpdateRowHighlights()
+            GameTooltip:Hide()
+        end)
+
+        return slot
+    end
+
+    UpdateBagSlots = function()
+        local inv = CurrentInventory()
+
+        for i = 1, 5 do
+            local slot = bagSlots[i]
+            if slot then
+                local bagIndex = slotToBagIndex[i] or 0
+                slot.bagIndex = bagIndex
+                local bagData = GetBagData(inv, bagIndex)
+                local bagItemId = tonumber(bagData and bagData.bagItemId) or 0
+                local total = tonumber(bagData and bagData.numSlots) or (bagIndex == 0 and 16 or 0)
+
+                if bagIndex == 0 then
+                    slot.icon:SetTexture("Interface\\Icons\\INV_Misc_Bag_08")
+                    slot.icon:SetVertexColor(1, 1, 1, 1)
+                    slot.cap:SetText("16")
+                    slot.border:SetVertexColor(0.85, 0.75, 0.45, 0.95)
+                elseif bagItemId > 0 then
+                    local texture = GetItemIcon and GetItemIcon(bagItemId) or nil
+                    if not texture and GetItemInfo then texture = select(10, GetItemInfo(bagItemId)) end
+                    slot.icon:SetTexture(texture or "Interface\\Icons\\INV_Misc_QuestionMark")
+                    slot.icon:SetVertexColor(1, 1, 1, 1)
+                    slot.cap:SetText(total > 0 and tostring(total) or "")
+                    slot.border:SetVertexColor(0.65, 0.65, 0.65, 0.9)
+                else
+                    slot.icon:SetTexture("Interface\\Icons\\INV_Box_01")
+                    slot.icon:SetVertexColor(0.35, 0.35, 0.35, 0.55)
+                    slot.cap:SetText("")
+                    slot.border:SetVertexColor(0.35, 0.35, 0.35, 0.75)
+                end
+
+                if slot.selected then
+                    if selectedBagSlot == bagIndex then slot.selected:Show() else slot.selected:Hide() end
+                end
+            end
+        end
+    end
+
     -- InventoryUpdated / BankUpdated: only update the UI, do NOT re-trigger OnBotSelect.
     -- Re-triggering creates a cascade (callback → OnBotSelect → RequestInventoryRefresh)
     -- that overlaps with the initial request cycle, causing token collisions and lost data.
@@ -237,6 +512,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
         local bank = PBAM.Bridge.Bank and PBAM.Bridge.Bank[key]
         ClearRows(); HideTargetMenu()
+        UpdateBagSlots()  -- Refresh bag slots when inventory is updated
         if showingBank then
             titleFs:SetText("Bank")
             goldFs:SetText("Bank Gold: " .. MoneyText(bank and bank.goldCopper or 0))
@@ -321,6 +597,20 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     controlsFrame:SetPoint("TOPRIGHT", titleFs.goldLine or titleFs, "BOTTOMRIGHT", 0, -4)
     controlsFrame:SetSize(292, 34)
     AddBackdrop(controlsFrame, 0.22)
+
+    -- Compact 5-slot bag bar. Fixed width prevents it from stretching past the header.
+    bagsFrame = CreateFrame("Frame", nil, header)
+    bagsFrame:SetPoint("TOPRIGHT", controlsFrame, "BOTTOMRIGHT", 0, 2)
+    bagsFrame:SetSize(194, 38)
+    AddBackdrop(bagsFrame, 0.22)
+
+    -- Backpack is always far right. Bag 1 is immediately left of it, then 2/3/4 leftward.
+    table.insert(bagSlots, CreateBagSlot(1, -38))   -- Bag 1
+    table.insert(bagSlots, CreateBagSlot(2, -76))   -- Bag 2
+    table.insert(bagSlots, CreateBagSlot(3, -114))  -- Bag 3
+    table.insert(bagSlots, CreateBagSlot(4, -152))  -- Bag 4
+    table.insert(bagSlots, CreateBagSlot(5, 0))     -- Backpack
+    UpdateBagSlots()
 
     slotsFs = header:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     slotsFs:SetPoint("TOPLEFT", titleFs, "BOTTOMLEFT", 4, -10)
@@ -489,7 +779,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     targetContent:SetWidth(180)
     targetScroll:SetScrollChild(targetContent)
 
-    local statusFs = actionPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    statusFs = actionPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     statusFs:SetPoint("TOPLEFT", actionPanel, "TOPLEFT", 18, -330)
     statusFs:SetPoint("RIGHT", actionPanel, "RIGHT", -18, 0)
     statusFs:SetJustifyH("LEFT")
@@ -947,8 +1237,20 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         local selectedText = selectedTradeItem and ItemText(selectedTradeItem) or nil
         for i, r in ipairs(rows) do
             if r.bg then
+                local rowBag = r.item and NormalizeBagIndex(r.item.bag) or nil
                 local selected = selectedText and r.itemText == selectedText
-                if selected then r.bg:SetVertexColor(0.95, 0.72, 0.18, 0.36) else r.bg:SetVertexColor(0.10,0.10,0.12, i % 2 == 0 and 0.32 or 0.18) end
+                local filtered = selectedBagSlot ~= nil and rowBag ~= nil and rowBag == selectedBagSlot
+                local hovered = hoverBagSlot ~= nil and rowBag ~= nil and rowBag == hoverBagSlot
+
+                if selected then
+                    r.bg:SetVertexColor(0.95, 0.72, 0.18, 0.36)
+                elseif filtered then
+                    r.bg:SetVertexColor(0.20, 0.32, 0.48, i % 2 == 0 and 0.45 or 0.32)
+                elseif hovered then
+                    r.bg:SetVertexColor(0.16, 0.26, 0.42, i % 2 == 0 and 0.42 or 0.28)
+                else
+                    r.bg:SetVertexColor(0.10, 0.10, 0.12, i % 2 == 0 and 0.32 or 0.18)
+                end
             end
         end
     end
@@ -1400,7 +1702,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                 return
             end
             lastTabOpenInventoryRequest = now
-            PBAM.Bridge.Inventory[key] = { name = botName, items = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
+            PBAM.Bridge.Inventory[key] = { name = botName, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
             PBAM.Bridge.RequestInventory(botName)
         end
         panel.OnBotSelect(botName)
@@ -1410,6 +1712,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         ClearRows()
         HideTargetMenu()
         UpdateActionButtons(botName)
+        UpdateBagSlots()  -- Refresh bag slots when bot selection changes
         if not botName then emptyFs:Show(); header:Hide(); body:Hide(); return end
         emptyFs:Hide(); header:Show(); body:Show()
         if buyMode then
@@ -1441,7 +1744,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
 
         titleFs:SetText("Inventory")
         if not inv then
-            PBAM.Bridge.Inventory[key] = { name = botName, items = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
+            PBAM.Bridge.Inventory[key] = { name = botName, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
             PBAM.Bridge.RequestInventory(botName)
             local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_PocketWatch_01"); r.text:SetText("Requesting inventory...")
             goldFs:SetText("Gold: loading..."); slotsFs:SetText(""); content:SetHeight(60); return
@@ -1450,13 +1753,6 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_PocketWatch_01"); r.text:SetText("Requesting inventory...")
             goldFs:SetText("Gold: loading..."); slotsFs:SetText(""); content:SetHeight(60); return
         end
-        goldFs:SetText("Gold: " .. MoneyText(inv.goldCopper) .. (bank and bank.goldCopper and ("   Bank: " .. MoneyText(bank.goldCopper)) or ""))
-        slotsFs:SetText(string.format("Bags: %d / %d", inv.bagUsed or 0, inv.bagTotal or 0))
-        local displayItems = (inv.itemLocations and #inv.itemLocations > 0) and inv.itemLocations or inv.items
-        if not displayItems or #displayItems == 0 then
-            local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Box_01"); r.text:SetText("No inventory items returned."); content:SetHeight(60); return
-        end
-        for i, item in ipairs(displayItems) do local r = Row(i); r.item=item; r.itemText=ItemText(item); r.icon:SetTexture(ItemIcon(item)); r.text:SetText(ItemText(item)) end
-        UpdateRowHighlights(); content:SetHeight(20 + #displayItems * ROW_H)
+        RenderInventoryRows(inv, bank)
     end
 end, { hideForPlayer = true })
