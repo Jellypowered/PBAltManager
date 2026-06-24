@@ -55,6 +55,20 @@ local function ItemIcon(item)
     return "Interface\\Icons\\INV_Misc_QuestionMark"
 end
 
+local function IsEquippableBagItem(item)
+    local id = ItemId(item)
+    if id and id > 0 and GetItemInfo then
+        local _, _, _, _, _, itemType, itemSubType, _, itemEquipLoc = GetItemInfo(id)
+        itemType = tostring(itemType or ""):lower()
+        itemSubType = tostring(itemSubType or ""):lower()
+        itemEquipLoc = tostring(itemEquipLoc or "")
+        if itemEquipLoc == "INVTYPE_BAG" or itemEquipLoc == "INVTYPE_QUIVER" then return true end
+        if itemType == "container" or itemSubType:find("quiver", 1, true) or itemSubType:find("ammo", 1, true) then return true end
+    end
+    local name = string.lower(ItemName(item) or "")
+    return name:find("quiver", 1, true) or name:find("ammo pouch", 1, true) or name:find("shot pouch", 1, true)
+end
+
 local function After(delay, func)
     return PBAM.After(delay, func)
 end
@@ -278,6 +292,19 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             if showingBank then After(0.70, function() PBAM.Bridge.RequestBank(PBAM.SelectedBot) end) end
         end
     end)
+    PBAM.Bridge.RegisterCallback("NativeActionResult", function(result)
+        if not result or PBAM.CurrentTab ~= "Inventory" then return end
+        if result.type ~= "ITEM_EQUIP" and result.type ~= "ITEM_TRADE" then return end
+        if result.botName ~= PBAM.SelectedBot then return end
+        local ok = result.result == "OK"
+        local label = result.type == "ITEM_TRADE" and "Trade" or "Equip"
+        local extra = result.type == "ITEM_TRADE" and (" moved=" .. tostring(result.moved or 0)) or ""
+        LogStatus(panel.StatusText, label .. (ok and " complete" or " failed") .. extra .. (ok and "" or (": " .. tostring(result.reason or "unknown"))), ok and 0.35 or 1, ok and 0.9 or 0.35, ok and 0.45 or 0.25)
+        if ok and PBAM.SelectedBot then
+            After(0.75, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
+            if result.type == "ITEM_EQUIP" and PBAM.RefreshEquipmentTab then After(0.75, function() PBAM.RefreshEquipmentTab(PBAM.SelectedBot, true) end) end
+        end
+    end)
     local emptyFs = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     emptyFs:SetPoint("CENTER", panel, "CENTER", EMPTY_MESSAGE_X_OFFSET, EMPTY_MESSAGE_Y_OFFSET)
     emptyFs:SetText("Select a bot to view inventory")
@@ -391,11 +418,13 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     local tradeTargetLabel = actionPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     tradeTargetLabel:SetPoint("TOPLEFT", actionPanel, "TOPLEFT", 18, -124)
     tradeTargetLabel:SetText("Trade Target")
+    tradeTargetLabel:Hide()
 
     local targetButton = CreateFrame("Button", nil, actionPanel, "UIPanelButtonTemplate")
     targetButton:SetSize(180, 24)
     targetButton:SetPoint("TOPLEFT", tradeTargetLabel, "BOTTOMLEFT", 0, -6)
-    targetButton:SetText("Choose")
+    targetButton:SetText("Player")
+    targetButton:Hide()
 
     local function SellButton(text, y)
         local b = CreateFrame("Button", nil, actionPanel, "UIPanelButtonTemplate")
@@ -483,7 +512,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         PBAM.SetButtonEnabled(refreshBtn, hasBot, "Select a bot to refresh inventory.")
         PBAM.SetButtonEnabled(bankBtn, hasBot, "Select a bot to view bank data.")
         PBAM.SetButtonEnabled(invBtn, hasBot, "Select a bot to view inventory.")
-        PBAM.SetButtonEnabled(targetButton, hasBot and tradeMode, tradeMode and "No trade target is available right now." or "Enable Trade Mode to choose a trade target.")
+        PBAM.SetButtonEnabled(targetButton, false, "Trade Mode always targets your player character.")
         equipCheck:SetEnabled(hasBot)
         equipCheck:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -499,7 +528,8 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:SetText("Trade Mode", 1, 0.82, 0.22, true)
             GameTooltip:AddLine("Enable trading with the selected bot", 0.8, 0.8, 0.8, true)
-            GameTooltip:AddLine("Click items to send them to the bot's trade window", 0.6, 0.6, 0.6, true)
+            GameTooltip:AddLine("Trade target is always your player character.", 0.6, 0.6, 0.6, true)
+            GameTooltip:AddLine("Click items to place them into the bot's trade window.", 0.6, 0.6, 0.6, true)
             GameTooltip:Show()
         end)
         tradeCheck:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -544,7 +574,8 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     end
 
     local function SetTargetText()
-        targetButton:SetText(tradeTarget or "Choose")
+        tradeTarget = UnitShortName("player") or UnitName("player")
+        targetButton:SetText(tradeTarget or "Player")
     end
 
     HideTargetMenu = function()
@@ -552,50 +583,9 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     end
 
     local function ShowTargetMenu()
-        local targets = GetEligibleTradeTargets()
-        if (not tradeTarget or tradeTarget == "") and targets[1] then tradeTarget = targets[1].name end
+        tradeTarget = UnitShortName("player") or UnitName("player")
         SetTargetText()
-        for _, r in ipairs(targetRows) do r:Hide() end
-
-        local rowH = 22
-        local menuH = math.min(220, math.max(32, (#targets * rowH) + 12))
-        targetMenu:SetHeight(menuH)
-        targetContent:SetHeight(math.max(menuH - 12, #targets * rowH))
-
-        for i, target in ipairs(targets) do
-            local r = targetRows[i]
-            if not r then
-                r = CreateFrame("Button", nil, targetContent)
-                r:SetHeight(rowH)
-                r:SetPoint("LEFT", targetContent, "LEFT", 0, 0)
-                r:SetPoint("RIGHT", targetContent, "RIGHT", 0, 0)
-                r.bg = r:CreateTexture(nil, "BACKGROUND"); r.bg:SetAllPoints(); r.bg:SetTexture("Interface\\Buttons\\WHITE8x8")
-                r.text = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); r.text:SetPoint("LEFT", r, "LEFT", 6, 0); r.text:SetPoint("RIGHT", r, "RIGHT", -6, 0); r.text:SetJustifyH("LEFT")
-                r:SetScript("OnClick", function(self)
-                    tradeTarget = self.value
-                    SetTargetText()
-                    HideTargetMenu()
-                    LogStatus(statusFs, "Trade target set to " .. tostring(tradeTarget), 0.75, 0.75, 0.75)
-                end)
-                targetRows[i] = r
-            end
-            r:SetPoint("TOPLEFT", targetContent, "TOPLEFT", 0, -(i - 1) * rowH)
-            r.value = target.name
-            r.text:SetText(target.label or target.name)
-            r.bg:SetVertexColor(0.12, 0.12, 0.14, target.name == tradeTarget and 0.75 or (i % 2 == 0 and 0.38 or 0.20))
-            r:Show()
-        end
-
-        targetMenu:ClearAllPoints()
-        local scale = UIParent and UIParent.GetEffectiveScale and UIParent:GetEffectiveScale() or 1
-        local bottom = targetButton.GetBottom and targetButton:GetBottom() or 0
-        local top = targetButton.GetTop and targetButton:GetTop() or 0
-        if bottom and (bottom * scale) > (menuH + 20) then
-            targetMenu:SetPoint("TOPLEFT", targetButton, "BOTTOMLEFT", 0, -2)
-        else
-            targetMenu:SetPoint("BOTTOMLEFT", targetButton, "TOPLEFT", 0, 2)
-        end
-        targetMenu:Show()
+        HideTargetMenu()
     end
 
     targetButton:SetScript("OnClick", function()
@@ -604,10 +594,9 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     end)
 
     local function RefreshTargetDropdown()
-        local targets = GetEligibleTradeTargets()
-        if (not tradeTarget or tradeTarget == "") and targets[1] then tradeTarget = targets[1].name end
+        tradeTarget = UnitShortName("player") or UnitName("player")
         SetTargetText()
-        if targetMenu:IsShown() then ShowTargetMenu() end
+        HideTargetMenu()
     end
 
     local function BotClassName(botName)
@@ -643,14 +632,37 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         return best
     end
 
-    local function BuildAmmoAction(item)
+    local function CountInventoryItem(botName, itemId)
+        local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[string.lower(tostring(botName or ""))]
+        local total = 0
+        for _, item in ipairs((inv and inv.itemLocations) or {}) do
+            if tonumber(item.itemId) == tonumber(itemId) then total = total + (tonumber(item.count) or 0) end
+        end
+        return total
+    end
+
+    local function BridgeRangedItem(botName)
+        local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[string.lower(tostring(botName or ""))]
+        for _, item in ipairs((inv and inv.equipmentLocations) or {}) do
+            if tonumber(item.equipSlot) == 17 then return item end
+        end
+        return nil
+    end
+
+    local function BuildAmmoAction(item, botName)
         if not item then return nil end
+        local stack = math.max(1, tonumber(item.stackCount) or tonumber(item.quantity) or 1)
+        local targetCount = stack * 4
+        local owned = CountInventoryItem(botName, item.itemId)
+        local buyCount = math.max(0, targetCount - owned)
+        if buyCount <= 0 then return nil, "Already has at least " .. tostring(targetCount) .. "x " .. tostring(item.name or item.itemId) .. "." end
         return {
             kind = "buyammo",
             itemId = item.itemId,
-            count = math.max(1, tonumber(item.stackCount) or tonumber(item.quantity) or 1) * 4,
+            count = buyCount,
             itemName = item.name,
             itemLink = item.link or item.name,
+            owned = owned,
         }
     end
 
@@ -659,18 +671,23 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         local botLevel = BotLevel(botName)
         local unit = PBAM.FindBotUnit and PBAM.FindBotUnit(botName) or nil
         local rangedLink = unit and GetInventoryItemLink and GetInventoryItemLink(unit, 18) or nil
+        local bridgeRanged = BridgeRangedItem(botName)
         local ammoKind = nil
-        if rangedLink and GetItemInfo then
-            local _, _, _, _, _, _, rangedSubType = GetItemInfo(rangedLink)
-            local sub = string.lower(tostring(rangedSubType or ""))
-            if sub:find("bow", 1, true) then ammoKind = "arrow"
-            elseif sub:find("gun", 1, true) then ammoKind = "bullet" end
+        local function inferAmmoKind(itemRef)
+            if itemRef and GetItemInfo then
+                local _, _, _, _, _, _, rangedSubType = GetItemInfo(itemRef)
+                local sub = string.lower(tostring(rangedSubType or ""))
+                if sub:find("bow", 1, true) or sub:find("crossbow", 1, true) then return "arrow" end
+                if sub:find("gun", 1, true) then return "bullet" end
+            end
+            return nil
         end
+        ammoKind = inferAmmoKind(rangedLink) or inferAmmoKind(bridgeRanged and bridgeRanged.itemId and ("item:" .. tostring(bridgeRanged.itemId)))
 
         if ammoKind then
             local best = BestVendorAmmo(ammoKind, botLevel)
             if not best then return nil, "No level-appropriate ammo found." end
-            return BuildAmmoAction(best)
+            return BuildAmmoAction(best, botName)
         end
 
         -- Fallback when the bot's ranged weapon cannot be inspected. This happens
@@ -680,10 +697,16 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
 
         local arrow = BestVendorAmmo("arrow", botLevel)
         local bullet = BestVendorAmmo("bullet", botLevel)
-        if arrow and not bullet then return BuildAmmoAction(arrow) end
-        if bullet and not arrow then return BuildAmmoAction(bullet) end
+        if arrow and not bullet then return BuildAmmoAction(arrow, botName) end
+        if bullet and not arrow then return BuildAmmoAction(bullet, botName) end
         if arrow and bullet then
-            return { kind = "buyammo_multi", actions = { BuildAmmoAction(arrow), BuildAmmoAction(bullet) }, itemName = "arrows and bullets" }
+            local arrowAction = BuildAmmoAction(arrow, botName)
+            local bulletAction = BuildAmmoAction(bullet, botName)
+            local actions = {}
+            if arrowAction then table.insert(actions, arrowAction) end
+            if bulletAction then table.insert(actions, bulletAction) end
+            if #actions > 0 then return { kind = "buyammo_multi", actions = actions, itemName = "arrows and bullets" } end
+            return nil, "Already has enough arrows and bullets."
         end
         return nil, "No level-appropriate ammo found."
     end
@@ -727,7 +750,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                 if not isBatchSelling then return end
                 local action = entry.action
                 if action.kind == "whisper" then
-                    if DEFAULT_CHAT_FRAME then DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. entry.name .. " " .. action.command) end
+                    PBAM.LegacySendingMessage("[PBAM] Sending: /w " .. entry.name .. " " .. action.command)
                     SendChatMessage(action.command, "WHISPER", nil, entry.name)
                     if action.refreshInventory and PBAM.Bridge and PBAM.Bridge.RequestInventory then
                         After(1.25, function()
@@ -814,7 +837,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             if link and link ~= "" then
                 local msg = "@hunter b " .. tostring(link)
                 After((i - 1) * 0.75, function()
-                    if DEFAULT_CHAT_FRAME then DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /" .. string.lower(channel) .. " " .. msg) end
+                    PBAM.LegacySendingMessage("[PBAM] Sending: /" .. string.lower(channel) .. " " .. msg)
                     SendChatMessage(msg, channel)
                 end)
             end
@@ -835,7 +858,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         end
         local channel = (GetNumRaidMembers and GetNumRaidMembers() > 0) and "RAID" or "PARTY"
         if DEFAULT_CHAT_FRAME then
-            DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /" .. string.lower(channel) .. " " .. command)
+            PBAM.LegacySendingMessage("[PBAM] Sending: /" .. string.lower(channel) .. " " .. command)
         end
         SendChatMessage(command, channel)
         sellBatch:SetChecked(false)
@@ -849,7 +872,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         local msg = item and (command .. " " .. link) or command
         if suffix and suffix ~= "" then msg = msg .. " " .. tostring(suffix) end
         if DEFAULT_CHAT_FRAME then
-            DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. botName .. " " .. string.sub(msg, 1, 100))
+            PBAM.LegacySendingMessage("[PBAM] Sending: /w " .. botName .. " " .. string.sub(msg, 1, 100))
         end
         SendChatMessage(msg, "WHISPER", nil, botName)
         return true
@@ -983,10 +1006,13 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         end
 
         if equipMode then
-            local hint = button == "LeftButton" and "main/normal" or "offhand/standard"
-            -- Playerbot command: "e <itemlink>" triggers EquipAction
-            if SendLegacyInventoryCommand("e", PBAM.SelectedBot, item) then
-                LogStatus(statusFs, "Equip command sent (" .. hint .. ") for " .. ItemName(item) .. ". Bot will equip if item is valid.", 0.35, 0.9, 0.45)
+            local slotHint = IsEquippableBagItem(item) and "BAG" or (button == "RightButton" and "OFF_HAND" or "AUTO")
+            if PBAM.Bridge and PBAM.Bridge.ItemEquip and PBAM.Bridge.ItemEquip(PBAM.SelectedBot, ItemId(item), slotHint, item.bag, item.slot) then
+                LogStatus(statusFs, "Equip request sent (" .. slotHint .. ") for " .. ItemName(item) .. ".", 0.35, 0.9, 0.45)
+                RequestInventoryRefresh()
+                RequestEquipmentRefresh()
+            elseif SendLegacyInventoryCommand("e", PBAM.SelectedBot, item) then
+                LogStatus(statusFs, "Legacy equip command sent for " .. ItemName(item) .. ".", 0.35, 0.9, 0.45)
                 RequestInventoryRefresh()
                 RequestEquipmentRefresh()
             else
@@ -1006,13 +1032,14 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                 LogStatus(statusFs, "Please wait... Bot accepting trade. Try again in " .. string.format("%.1f", 2.5 - elapsed) .. "s.", 0.95, 0.8, 0.25)
                 return
             end
-            -- Use mod-playerbots' real trade trigger directly.
-            -- "give <itemLink>" works only because item-link auto-trade parsing falls through to "t";
-            -- sending "t <itemLink> 1" avoids the extra auto path and limits insertion to one trade slot/stack.
             local name = ItemName(item)
-            if SendLegacyInventoryCommand("t", PBAM.SelectedBot, item, "1") then
-                LogStatus(statusFs, "Sent trade command for " .. name .. " to " .. PBAM.SelectedBot .. ".", 0.35, 0.9, 0.45)
-                -- Auto-refresh after successful trade (within 5s total)
+            local targetName = UnitShortName("player") or UnitName("player")
+            if PBAM.Bridge and PBAM.Bridge.ItemTrade and PBAM.Bridge.ItemTrade(PBAM.SelectedBot, ItemId(item), targetName, 0, item.bag, item.slot) then
+                LogStatus(statusFs, "Bridge trade request sent for " .. name .. " to " .. tostring(targetName) .. ".", 0.35, 0.9, 0.45)
+                After(1.50, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
+                After(2.25, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
+            elseif SendLegacyInventoryCommand("t", PBAM.SelectedBot, item, "1") then
+                LogStatus(statusFs, "Legacy trade command sent for " .. name .. ".", 0.35, 0.9, 0.45)
                 After(1.50, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
                 After(2.25, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
             else
@@ -1035,7 +1062,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             end
             -- Send 's <itemLink>' command to sell the item
             if DEFAULT_CHAT_FRAME then
-                DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " s " .. string.sub(link, 1, 100))
+                PBAM.LegacySendingMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " s " .. string.sub(link, 1, 100))
             end
             SendChatMessage("s " .. link, "WHISPER", nil, PBAM.SelectedBot)
             LogStatus(statusFs, "Sent sell command for " .. name .. (sellBatch:GetChecked() and " (batch mode: whole stack)" or "") .. ". Refreshing in 1.25s...", 0.35, 0.9, 0.45)
@@ -1043,7 +1070,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             return
         end
 
-        if destroyCheck then
+        if destroyMode then
             local link = ItemLink(item)
             local name = ItemName(item)
             if not link or link == "" then
@@ -1051,13 +1078,13 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                 return
             end
 
-            -- Send 'destroy <itemLink>' command to destroy the item
-            if DEFAULT_CHAT_FRAME then
-                DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " destroy " .. string.sub(link, 1, 100))
-            end
-            SendChatMessage("destroy " .. link, "WHISPER", nil, PBAM.SelectedBot)
-            LogStatus(statusFs, "Sent destroy command for " .. name .. ". Refreshing in 1.25s...", 0.35, 0.9, 0.45)
-            After(1.25, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
+            PBAM.ConfirmDestructive("Destroy " .. tostring(name or link) .. " on " .. tostring(PBAM.SelectedBot) .. "?", function()
+                -- Send 'destroy <itemLink>' command to destroy the item
+                PBAM.LegacySendingMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " destroy " .. string.sub(link, 1, 100))
+                SendChatMessage("destroy " .. link, "WHISPER", nil, PBAM.SelectedBot)
+                LogStatus(statusFs, "Sent destroy command for " .. name .. ". Refreshing in 1.25s...", 0.35, 0.9, 0.45)
+                After(1.25, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
+            end)
             return
         end
 
@@ -1126,7 +1153,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                 -- Match MultiBot-Chatless: open the trade from the client, then insert only clicked items.
                 if InitiateTrade then InitiateTrade(PBAM.SelectedBot) end
             end
-            LogStatus(statusFs, "Trade Mode enabled for " .. tostring(PBAM.SelectedBot or "selected bot") .. ". Wait ~1s before inserting items.", 0.35, 0.9, 0.45)
+            LogStatus(statusFs, "Trade Mode enabled for " .. tostring(PBAM.SelectedBot or "selected bot") .. ". Target is your player; wait ~1s before inserting items.", 0.35, 0.9, 0.45)
         else
             selectedTradeItem = nil; UpdateRowHighlights(); HideTargetMenu()
             tradeInitiatedAt = 0
@@ -1163,7 +1190,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             return
         end
         if DEFAULT_CHAT_FRAME then
-            DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " s *")
+            PBAM.LegacySendingMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " s *")
         end
         SendChatMessage("s *", "WHISPER", nil, PBAM.SelectedBot)
         After(1.25, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
@@ -1181,7 +1208,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             return
         end
         if DEFAULT_CHAT_FRAME then
-            DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " s vendor")
+            PBAM.LegacySendingMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " s vendor")
         end
         SendChatMessage("s vendor", "WHISPER", nil, PBAM.SelectedBot)
         After(1.25, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
@@ -1196,7 +1223,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         if sellBatch:GetChecked() then
             local channel = (GetNumRaidMembers and GetNumRaidMembers() > 0) and "RAID" or "PARTY"
             if DEFAULT_CHAT_FRAME then
-                DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /" .. string.lower(channel) .. " repair all")
+                PBAM.LegacySendingMessage("[PBAM] Sending: /" .. string.lower(channel) .. " repair all")
             end
             SendChatMessage("repair all", channel)
             sellBatch:SetChecked(false)
@@ -1205,7 +1232,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         end
         if not PBAM.SelectedBot then return end
         if DEFAULT_CHAT_FRAME then
-            DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " repair all")
+            PBAM.LegacySendingMessage("[PBAM] Sending: /w " .. PBAM.SelectedBot .. " repair all")
         end
         SendChatMessage("repair all", "WHISPER", nil, PBAM.SelectedBot)
         LogStatus(statusFs, "Sent repair command for " .. tostring(PBAM.SelectedBot) .. ".", 0.35, 0.9, 0.45)
@@ -1425,10 +1452,11 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         end
         goldFs:SetText("Gold: " .. MoneyText(inv.goldCopper) .. (bank and bank.goldCopper and ("   Bank: " .. MoneyText(bank.goldCopper)) or ""))
         slotsFs:SetText(string.format("Bags: %d / %d", inv.bagUsed or 0, inv.bagTotal or 0))
-        if not inv.items or #inv.items == 0 then
+        local displayItems = (inv.itemLocations and #inv.itemLocations > 0) and inv.itemLocations or inv.items
+        if not displayItems or #displayItems == 0 then
             local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Box_01"); r.text:SetText("No inventory items returned."); content:SetHeight(60); return
         end
-        for i, item in ipairs(inv.items) do local r = Row(i); r.item=item; r.itemText=ItemText(item); r.icon:SetTexture(ItemIcon(item)); r.text:SetText(ItemText(item)) end
-        UpdateRowHighlights(); content:SetHeight(20 + #inv.items * ROW_H)
+        for i, item in ipairs(displayItems) do local r = Row(i); r.item=item; r.itemText=ItemText(item); r.icon:SetTexture(ItemIcon(item)); r.text:SetText(ItemText(item)) end
+        UpdateRowHighlights(); content:SetHeight(20 + #displayItems * ROW_H)
     end
 end, { hideForPlayer = true })

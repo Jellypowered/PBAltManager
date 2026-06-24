@@ -162,6 +162,7 @@ local function CreateDropdown(parent, values)
             info.text = entry.label or tostring(entry.value)
             info.value = entry.value
             info.checked = (entry.value == self.selectedValue)
+            info.icon = entry.icon
             info.tooltipTitle = entry.tooltipTitle or entry.label or tostring(entry.value)
             info.tooltipText = entry.tooltipText or entry.tooltip or nil
             info.func = function()

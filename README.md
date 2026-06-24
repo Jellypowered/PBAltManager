@@ -12,14 +12,17 @@ It brings the most useful day-to-day bot management tools into one window with a
 
 ## Features
 
-- Roster overview for bots and the logged-in player
-- Talents viewer/planner
-- Inventory and bank view
-- Professions and recipe browser
-- Spells tab for non-profession spellbook browsing and legacy cast MVP
-- Trainer spell view
-- Equipment and outfits view
+- Roster overview for bots and the logged-in player (with roster sort options)
+- Talents viewer/planner with native bridge talent apply (including custom builds and reset via 0-0-0)
+- Inventory view with exact item locations, bag entries, and equipment tabs
+- Bank view (when banker is nearby)
+- Professions and recipe browser with targeted craft modes (normal, trade slot, bag item, equipped item)
+- Spells tab with native bridge spell casting and detailed failure reason mapping
+- Trainer spell view and learning
+- Equipment tab with bridge data display and fallback to inspect
+- Outfits view
 - Search/filter tools and minimap launcher
+- Options panel with Silent Mode, Debug Mode, Hide Minimap Button, Suppress Legacy Sending, Confirm Destructive Actions, Default Roster Sort, and Refresh Throttle
 
 ## Requirements
 
@@ -52,11 +55,12 @@ It brings the most useful day-to-day bot management tools into one window with a
 
 - PBAltManager co-exists with Multibot-Chatless and CleanBot.
 - All planned implementation phases are complete. See [Roadmap](https://github.com/Jellypowered/PBAltManager/wiki/Roadmap).
-- Some actions still use controlled legacy fallback until bridge endpoints are expanded (see [bridgeplan.md](bridgeplan.md)).
 - The logged-in player is supported primarily through the Roster tab; bot-only tabs may hide when your own character is selected.
 - The clear-selection button now performs a full PBAltManager UI reset to get back to a fresh-start style state without reloading the whole WoW UI, followed by a delayed full refresh after bridge data has time to return.
 - Bot quests in the Roster tab are rendered as clickable quest links when bridge quest IDs are available.
-- Recent optimization work reduces client hangs by throttling duplicate bridge requests and batching roster refreshes. Some roster/sidebar sort data may appear slightly slower during initial loading, but the client should stay more responsive.
+- Native bridge endpoints implemented: QUEST_ABANDON, QUEST_SHARE, ITEM_EQUIP (with bag support), ITEM_TRADE, CAST_SPELL (with detailed failure reasons), TALENT_APPLY (including custom builds and reset via 0-0-0), CRAFT_RECIPE_TARGET (targeted craft with bag/trade/equip modes), INVENTORY_BULK, BOT_SKILLS_BULK.
+- Inventory packets INV_BAG, INV_ITEM_LOC, and INV_EQUIP_LOC provide exact bag/slot locations for items and equipment.
+- Recent optimization work reduces client hangs by throttling duplicate bridge requests (configurable 100-5000ms), debouncing callbacks, and batching roster refreshes. Some roster/sidebar sort data may appear slightly slower during initial loading, but the client stays more responsive.
 
 ## Documentation
 

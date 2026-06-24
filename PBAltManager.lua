@@ -12,11 +12,18 @@ PBAMConfig.Minimap = PBAMConfig.Minimap or { hide = false, angle = 0 }
 PBAMConfig.MainWindow = PBAMConfig.MainWindow or { width = 800, height = 600 }
 PBAMConfig.RosterSort = PBAMConfig.RosterSort or "alpha"
 PBAMConfig.RosterSortByTab = PBAMConfig.RosterSortByTab or {}
+if PBAMConfig.SilentMode == nil then PBAMConfig.SilentMode = false end
+if PBAMConfig.DebugMode == nil then PBAMConfig.DebugMode = false end
+if PBAMConfig.SuppressLegacySending == nil then PBAMConfig.SuppressLegacySending = false end
+if PBAMConfig.ConfirmDestructive == nil then PBAMConfig.ConfirmDestructive = true end
+if PBAMConfig.ShareQuestsToGroup == nil then PBAMConfig.ShareQuestsToGroup = true end
+PBAMConfig.RefreshThrottleMs = tonumber(PBAMConfig.RefreshThrottleMs) or 500
+PBAMConfig.RefreshThrottleMs = math.max(100, math.min(5000, PBAMConfig.RefreshThrottleMs))
 
 PBAM.MainWindow = nil
 PBAM.SelectedBot = nil
 PBAM.SelectedBotLower = nil
-PBAM.DebugEnabled = false  -- /pbam debug toggles this
+PBAM.DebugEnabled = PBAMConfig.DebugMode and true or false  -- /pbam debug toggles this
 PBAM.PendingRosterInventoryRequests = PBAM.PendingRosterInventoryRequests or {}  -- [key] = timestamp when request was SENT
 PBAM.PendingRosterSkillRequests = PBAM.PendingRosterSkillRequests or {}  -- [key] = timestamp when request was SENT
 PBAM.LastRefreshTime = PBAM.LastRefreshTime or {}  -- [type~bot] = timestamp for throttling
@@ -37,7 +44,7 @@ function PBAM.QueueRosterRefresh()
     rosterRefreshQueue = rosterRefreshQueue + 1
     if rosterRefreshPending then return end
     rosterRefreshPending = true
-    PBAM.After(0.1, function()  -- 100ms debounce
+    PBAM.After(math.max(0.25, (PBAM.GetRefreshThrottleMs and PBAM.GetRefreshThrottleMs() or 500) / 1000), function()  -- configurable debounce
         rosterRefreshPending = false
         local count = rosterRefreshQueue
         rosterRefreshQueue = 0
@@ -46,16 +53,194 @@ function PBAM.QueueRosterRefresh()
     end)
 end
 
+function PBAM.ChatMessage(msg, force)
+    if PBAMConfig and PBAMConfig.SilentMode and not force then return end
+    if DEFAULT_CHAT_FRAME then DEFAULT_CHAT_FRAME:AddMessage(tostring(msg or "")) end
+end
+
 PBAM.LogError = function(msg)
-    if DEFAULT_CHAT_FRAME then
-        DEFAULT_CHAT_FRAME:AddMessage("|cFFFF4444[PBAltManager]|r " .. tostring(msg or ""))
-    end
+    PBAM.ChatMessage("|cFFFF4444[PBAltManager]|r " .. tostring(msg or ""), true)
 end
 
 PBAM.LogInfo = function(msg)
-    if DEFAULT_CHAT_FRAME then
-        DEFAULT_CHAT_FRAME:AddMessage("|cFF69CCF0[PBAltManager]|r " .. tostring(msg or ""))
+    PBAM.ChatMessage("|cFF69CCF0[PBAltManager]|r " .. tostring(msg or ""))
+end
+
+function PBAM.LegacySendingMessage(msg)
+    if PBAMConfig and PBAMConfig.SuppressLegacySending then return end
+    PBAM.ChatMessage(msg)
+end
+
+StaticPopupDialogs = StaticPopupDialogs or {}
+StaticPopupDialogs["PBAM_CONFIRM_DESTRUCTIVE"] = {
+    text = "%s",
+    button1 = YES,
+    button2 = NO,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    OnAccept = function(self, data) if data and data.func then data.func() end end,
+}
+
+function PBAM.IsConfirmDestructiveEnabled()
+    if not PBAMConfig then return true end
+    local value = PBAMConfig.ConfirmDestructive
+    if value == false or value == 0 or value == "0" or value == "false" or value == "off" then return false end
+    return true
+end
+
+function PBAM.ConfirmDestructive(message, func)
+    if not PBAM.IsConfirmDestructiveEnabled() then
+        if func then func() end
+        return
     end
+    StaticPopup_Show("PBAM_CONFIRM_DESTRUCTIVE", tostring(message or "Are you sure?"), nil, { func = func })
+end
+
+function PBAM.RegisterOptionsPanel()
+    if PBAM.OptionsPanel or not InterfaceOptions_AddCategory then return end
+    local panel = CreateFrame("Frame", "PBAMOptionsPanel")
+    panel.name = "PBAltManager"
+    local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 16, -16)
+    title:SetText("PBAltManager")
+    local silent = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+    silent:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -18)
+    silent:SetChecked(PBAMConfig.SilentMode and true or false)
+    silent.text = silent:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    silent.text:SetPoint("LEFT", silent, "RIGHT", 2, 0)
+    silent.text:SetText("Silent Mode")
+    silent:SetScript("OnClick", function(self) PBAMConfig.SilentMode = self:GetChecked() and true or false end)
+    local desc = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    desc:SetPoint("TOPLEFT", silent, "BOTTOMLEFT", 4, -8)
+    desc:SetWidth(560)
+    desc:SetJustifyH("LEFT")
+    desc:SetText("Hide PBAltManager status messages from chat. Error messages still show.")
+
+    local debug = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+    debug:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", -4, -16)
+    debug:SetChecked(PBAMConfig.DebugMode and true or false)
+    debug.text = debug:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    debug.text:SetPoint("LEFT", debug, "RIGHT", 2, 0)
+    debug.text:SetText("Debug Mode")
+    debug:SetScript("OnClick", function(self)
+        PBAMConfig.DebugMode = self:GetChecked() and true or false
+        PBAM.DebugEnabled = PBAMConfig.DebugMode
+    end)
+    local debugDesc = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    debugDesc:SetPoint("TOPLEFT", debug, "BOTTOMLEFT", 4, -8)
+    debugDesc:SetWidth(560)
+    debugDesc:SetJustifyH("LEFT")
+    debugDesc:SetText("Show extra PBAltManager debug output in chat.")
+
+    local minimap = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+    minimap:SetPoint("TOPLEFT", debugDesc, "BOTTOMLEFT", -4, -16)
+    minimap:SetChecked(PBAMConfig.Minimap and PBAMConfig.Minimap.hide and true or false)
+    minimap.text = minimap:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    minimap.text:SetPoint("LEFT", minimap, "RIGHT", 2, 0)
+    minimap.text:SetText("Hide Minimap Button")
+    minimap:SetScript("OnClick", function(self)
+        PBAMConfig.Minimap = PBAMConfig.Minimap or {}
+        PBAMConfig.Minimap.hide = self:GetChecked() and true or false
+        if PBAM.SetMinimapHidden then PBAM.SetMinimapHidden(PBAMConfig.Minimap.hide) end
+    end)
+
+    local shareGroup = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+    shareGroup:SetPoint("TOPLEFT", minimap, "BOTTOMLEFT", 0, -8)
+    shareGroup:SetChecked(PBAMConfig.ShareQuestsToGroup and true or false)
+    shareGroup.text = shareGroup:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    shareGroup.text:SetPoint("LEFT", shareGroup, "RIGHT", 2, 0)
+    shareGroup.text:SetText("Share quests to group by default")
+    shareGroup:SetScript("OnClick", function(self) PBAMConfig.ShareQuestsToGroup = self:GetChecked() and true or false end)
+
+    local suppress = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+    suppress:SetPoint("TOPLEFT", shareGroup, "BOTTOMLEFT", 0, -8)
+    suppress:SetChecked(PBAMConfig.SuppressLegacySending and true or false)
+    suppress.text = suppress:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    suppress.text:SetPoint("LEFT", suppress, "RIGHT", 2, 0)
+    suppress.text:SetText("Suppress legacy whisper 'Sending...' messages only")
+    suppress:SetScript("OnClick", function(self) PBAMConfig.SuppressLegacySending = self:GetChecked() and true or false end)
+
+    local confirm = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+    confirm:SetPoint("TOPLEFT", suppress, "BOTTOMLEFT", 0, -8)
+    confirm:SetChecked(PBAM.IsConfirmDestructiveEnabled())
+    confirm.text = confirm:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    confirm.text:SetPoint("LEFT", confirm, "RIGHT", 2, 0)
+    confirm.text:SetText("Confirm destructive actions")
+    confirm:SetScript("OnClick", function(self) PBAMConfig.ConfirmDestructive = self:GetChecked() and true or false end)
+
+    local sortLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    sortLabel:SetPoint("TOPLEFT", confirm, "BOTTOMLEFT", 4, -18)
+    sortLabel:SetText("Default roster sort:")
+    local sortDrop = CreateFrame("Frame", "PBAMOptionsSortDropdown", panel, "UIDropDownMenuTemplate")
+    sortDrop:SetPoint("LEFT", sortLabel, "RIGHT", -8, -2)
+    UIDropDownMenu_SetWidth(sortDrop, 140)
+    UIDropDownMenu_Initialize(sortDrop, function(self)
+        for _, entry in ipairs(PBAM.GetRosterSortOptions and PBAM.GetRosterSortOptions() or {}) do
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = entry.label
+            info.value = entry.value
+            info.checked = PBAMConfig.RosterSort == entry.value
+            info.func = function()
+                PBAMConfig.RosterSort = entry.value
+                UIDropDownMenu_SetText(sortDrop, entry.label)
+            end
+            UIDropDownMenu_AddButton(info)
+        end
+    end)
+    local currentSort = PBAM.GetRosterSortOptions and PBAM.GetRosterSortOptions()[1]
+    for _, entry in ipairs(PBAM.GetRosterSortOptions and PBAM.GetRosterSortOptions() or {}) do if entry.value == PBAMConfig.RosterSort then currentSort = entry end end
+    UIDropDownMenu_SetText(sortDrop, currentSort and currentSort.label or "Alphabetical")
+
+    local sortDesc = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    sortDesc:SetPoint("TOPLEFT", sortLabel, "BOTTOMLEFT", 0, -8)
+    sortDesc:SetWidth(560)
+    sortDesc:SetJustifyH("LEFT")
+    sortDesc:SetText("Fallback used for tabs without a remembered sort. Per-tab sort choices are preserved.")
+
+    local throttleLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    throttleLabel:SetPoint("TOPLEFT", sortDesc, "BOTTOMLEFT", 0, -14)
+    throttleLabel:SetText("Refresh throttle ms:")
+    local throttleEdit = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
+    throttleEdit:SetSize(70, 22)
+    throttleEdit:SetPoint("LEFT", throttleLabel, "RIGHT", 10, 0)
+    throttleEdit:SetAutoFocus(false)
+    throttleEdit:SetNumeric(true)
+    throttleEdit:SetText(tostring(PBAM.GetRefreshThrottleMs()))
+    local function SaveThrottle()
+        local value = tonumber(throttleEdit:GetText()) or DEFAULT_REFRESH_THROTTLE_MS
+        value = math.max(100, math.min(5000, value))
+        PBAMConfig.RefreshThrottleMs = value
+        throttleEdit:SetText(tostring(value))
+        throttleEdit:ClearFocus()
+    end
+    throttleEdit:SetScript("OnEnterPressed", SaveThrottle)
+    throttleEdit:SetScript("OnEditFocusLost", SaveThrottle)
+
+    local throttleDesc = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    throttleDesc:SetPoint("TOPLEFT", throttleLabel, "BOTTOMLEFT", 0, -8)
+    throttleDesc:SetWidth(560)
+    throttleDesc:SetJustifyH("LEFT")
+    throttleDesc:SetText("Higher values reduce refresh spam and may help client hangs. Range: 100-5000 ms.")
+
+    panel.silentCheck = silent
+    panel.debugCheck = debug
+    panel.minimapCheck = minimap
+    panel.shareGroupCheck = shareGroup
+    panel.suppressLegacyCheck = suppress
+    panel.confirmDestructiveCheck = confirm
+    panel.throttleEdit = throttleEdit
+    panel:SetScript("OnShow", function()
+        silent:SetChecked(PBAMConfig.SilentMode and true or false)
+        debug:SetChecked(PBAMConfig.DebugMode and true or false)
+        minimap:SetChecked(PBAMConfig.Minimap and PBAMConfig.Minimap.hide and true or false)
+        shareGroup:SetChecked(PBAMConfig.ShareQuestsToGroup and true or false)
+        suppress:SetChecked(PBAMConfig.SuppressLegacySending and true or false)
+        confirm:SetChecked(PBAM.IsConfirmDestructiveEnabled())
+        throttleEdit:SetText(tostring(PBAM.GetRefreshThrottleMs()))
+    end)
+    InterfaceOptions_AddCategory(panel)
+    PBAM.OptionsPanel = panel
 end
 
 local TREE_NAMES = {
@@ -72,7 +257,11 @@ local ROLE_BY_SPEC = {
 local ROLE_SORT_ORDER = { Tank=1, Healer=2, DPS=3, ["Tank/DPS"]=3, Unknown=4, ["N/A"]=4 }
 local ROSTER_SORT_REQUEST_TTL = 3.0
 local ROSTER_SORT_MAX_INFLIGHT = 4
-local REFRESH_THROTTLE_MS = 500  -- Minimum ms between same refreshes
+local DEFAULT_REFRESH_THROTTLE_MS = 500  -- Minimum ms between same refreshes
+function PBAM.GetRefreshThrottleMs()
+    local value = tonumber(PBAMConfig and PBAMConfig.RefreshThrottleMs) or DEFAULT_REFRESH_THROTTLE_MS
+    return math.max(100, math.min(5000, value))
+end
 
 local sharedAfterFrame, sharedAfterJobs
 function PBAM.After(delay, func)
@@ -316,6 +505,20 @@ function PBAM.RegisterCoreBridgeCallbacks()
         end
     end)
 
+    PBAM.Bridge.RegisterCallback("InventoryBulkUpdated", function()
+        PBAM.PendingRosterInventoryRequests = {}
+        if PBAM.CurrentTab == "Inventory" and PBAM.GetActiveRosterSortMode and PBAM.GetActiveRosterSortMode() == "bagspace" then
+            PBAM.QueueRosterRefresh()
+        end
+    end)
+
+    PBAM.Bridge.RegisterCallback("BotSkillsBulkUpdated", function()
+        PBAM.PendingRosterSkillRequests = {}
+        if PBAM.CurrentTab == "Professions" and PBAM.GetActiveRosterSortMode and PBAM.GetActiveRosterSortMode() == "profession" then
+            PBAM.QueueRosterRefresh()
+        end
+    end)
+
     PBAM.Bridge.RegisterCallback("StateUpdated", function(name, state)
         PBAM.DebugPrint("StateUpdated: " .. name)
     end)
@@ -334,13 +537,24 @@ SlashCmdList["PBAM"] = function(msg)
     elseif cmd == "show" then
         PBAM.OpenWindow()
     elseif cmd == "debug" then
-        PBAM.DebugEnabled = not PBAM.DebugEnabled
-        PBAM.DebugPrint("Debug mode " .. (PBAM.DebugEnabled and "enabled" or "disabled"))
+        PBAMConfig.DebugMode = not PBAMConfig.DebugMode
+        PBAM.DebugEnabled = PBAMConfig.DebugMode
+        if PBAM.OptionsPanel and PBAM.OptionsPanel.debugCheck then PBAM.OptionsPanel.debugCheck:SetChecked(PBAM.DebugEnabled) end
+        PBAM.ChatMessage("|cFF69CCF0[PBAltManager]|r Debug Mode " .. (PBAM.DebugEnabled and "enabled" or "disabled"), true)
     elseif cmd == "refresh" then
         PBAM.RefreshAll()
-
+    elseif cmd == "options" or cmd == "config" then
+        if PBAM.RegisterOptionsPanel then PBAM.RegisterOptionsPanel() end
+        if InterfaceOptionsFrame_OpenToCategory and PBAM.OptionsPanel then
+            InterfaceOptionsFrame_OpenToCategory(PBAM.OptionsPanel)
+            InterfaceOptionsFrame_OpenToCategory(PBAM.OptionsPanel)
+        end
+    elseif cmd == "silent" then
+        PBAMConfig.SilentMode = not PBAMConfig.SilentMode
+        if PBAM.OptionsPanel and PBAM.OptionsPanel.silentCheck then PBAM.OptionsPanel.silentCheck:SetChecked(PBAMConfig.SilentMode and true or false) end
+        PBAM.ChatMessage("|cFF69CCF0[PBAltManager]|r Silent Mode " .. (PBAMConfig.SilentMode and "enabled" or "disabled"), true)
     elseif cmd == "about" then
-        DEFAULT_CHAT_FRAME:AddMessage("|cFFD4AF37[PBAltManager]|r v" .. PBAM.Version .. " - Alt management for playerbots")
+        PBAM.ChatMessage("|cFFD4AF37[PBAltManager]|r v" .. PBAM.Version .. " - Alt management for playerbots", true)
     else
         if PBAM.MainWindow and PBAM.MainWindow:IsShown() then
             PBAM.MainWindow:Hide()
@@ -385,6 +599,11 @@ function PBAM.OpenWindow()
         PBAM.Bridge.SendHello()
     end
 
+    if not PBAM.InitialRefreshReady then
+        PBAM.DebugPrint("OpenWindow: initial refresh delayed until startup settles")
+        return
+    end
+
     -- Request roster and details
     PBAM.Bridge.RequestRoster()
     PBAM.Bridge.RequestBotDetails()
@@ -405,7 +624,7 @@ function PBAM.RefreshAll(force)
     if not force then
         local key = "all"
         local last = PBAM.LastRefreshTime[key] or 0
-        if (now - last) < (REFRESH_THROTTLE_MS / 1000) then
+        if (now - last) < (PBAM.GetRefreshThrottleMs() / 1000) then
             PBAM.DebugPrint("RefreshAll throttled: " .. tostring(now - last) .. "s since last")
             return
         end
@@ -1004,6 +1223,10 @@ function PBAM.RefreshRosterDisplay()
     end
     PBAM.BotListEntries = {}
     PBAM.BotListHeaders = {}
+    PBAM.BotListRowPool = PBAM.BotListRowPool or {}
+    PBAM.BotListHeaderPool = PBAM.BotListHeaderPool or {}
+    PBAM.BotListRowPoolUsed = 0
+    PBAM.BotListHeaderPoolUsed = 0
 
     local content = PBAM.BotListContent
     if not content then
@@ -1015,14 +1238,28 @@ function PBAM.RefreshRosterDisplay()
     local missingSkillNames = {}
     local now = GetTime and GetTime() or 0
 
+    local function ProfessionDisplayMax(rank, maxRank)
+        rank = tonumber(rank) or 0
+        maxRank = tonumber(maxRank) or 0
+        if maxRank > 0 then return maxRank end
+        if rank <= 75 then return 75 end          -- Apprentice: 1-75
+        if rank <= 150 then return 150 end        -- Journeyman: 75-150
+        if rank <= 225 then return 225 end        -- Expert: 150-225
+        if rank <= 300 then return 300 end        -- Artisan: 225-300
+        if rank <= 375 then return 375 end        -- Master: 300-375
+        if rank <= 550 then return 550 end        -- Grand Master display band; bonuses can exceed 450.
+        return rank                               -- Do not hard-cap unusual bonus values.
+    end
+
     local function BuildProfessionEntry(name, rank, maxRank, skillLine, bucket)
         if not name or name == "" then return nil end
+        rank = tonumber(rank) or 0
         return {
             id = tonumber(skillLine) or 0,
             name = name,
             displayName = name,
-            value = tonumber(rank) or 0,
-            max = tonumber(maxRank) or 0,
+            value = rank,
+            max = ProfessionDisplayMax(rank, maxRank),
             bucket = bucket,
         }
     end
@@ -1061,13 +1298,29 @@ function PBAM.RefreshRosterDisplay()
         if not entry then return {}, {} end
         if entry.isPlayer then return GetPlayerProfessions() end
         local key = string.lower(tostring(entry.name or ""))
+        -- Check bulk data first to avoid duplicate individual requests
+        if PBAM.Bridge and PBAM.Bridge.BotSkillsBulk and not PBAM.Bridge.BotSkillsBulk.loading then
+            local bulkEntry = PBAM.Bridge.BotSkillsBulk.items[key]
+            if bulkEntry and bulkEntry.skills and #bulkEntry.skills > 0 then
+                -- Rebuild professions from bulk skills data
+                local primary, secondary = {}, {}
+                for _, skill in ipairs(bulkEntry.skills or {}) do
+                    if string.lower(skill.category or "") == "profession" then
+                        local isSecondary = string.lower(skill.key or "") == "cooking" or string.lower(skill.key or "") == "fishing" or string.lower(skill.key or "") == "firstaid"
+                        local bucket = isSecondary and secondary or primary
+                        table.insert(bucket, BuildProfessionEntry(skill.name or skill.key, skill.value or 0, skill.maxValue or 75, skill.id or 0, isSecondary and "secondary" or "primary"))
+                    end
+                end
+                return primary, secondary
+            end
+        end
         -- Check both Professions (from BOT_SKILLS) and Crafting (from PROFESSION command)
         local skills = PBAM.Bridge and PBAM.Bridge.Professions and PBAM.Bridge.Professions[key] or nil
         local crafting = PBAM.Bridge and PBAM.Bridge.Crafting and PBAM.Bridge.Crafting[key] or nil
 
         if not skills and not crafting then
-            if sortMode == "profession" and PBAM.CurrentTab == "Professions" and PBAM.Bridge and PBAM.Bridge.RequestBotSkills then
-                -- Always queue this bot for skills request (we want ALL bots eventually)
+            -- Skip individual requests if bulk is in progress to avoid duplicates
+            if sortMode == "profession" and PBAM.CurrentTab == "Professions" and PBAM.Bridge and PBAM.Bridge.RequestBotSkills and (not PBAM.Bridge.BotSkillsBulk or PBAM.Bridge.BotSkillsBulk.loading == false) then
                 table.insert(missingSkillNames, entry.name)
             end
             return {}, {}
@@ -1131,19 +1384,32 @@ function PBAM.RefreshRosterDisplay()
         end
         local key = string.lower(tostring(entry.name or ""))
         local inv = PBAM.Bridge and PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key] or nil
+        if inv and not inv.loading then
+            entry._bagUsed = tonumber(inv.bagUsed) or 0
+            entry._bagTotal = tonumber(inv.bagTotal) or 0
+            return math.max(0, entry._bagTotal - entry._bagUsed)
+        end
+        -- Use bulk data as fallback when no fresher per-bot inventory snapshot is available.
+        if PBAM.Bridge and PBAM.Bridge.InventoryBulk and not PBAM.Bridge.InventoryBulk.loading then
+            local bulkEntry = PBAM.Bridge.InventoryBulk.items[key]
+            if bulkEntry then
+                entry._bagUsed = tonumber(bulkEntry.bagUsed) or 0
+                entry._bagTotal = tonumber(bulkEntry.bagTotal) or 0
+                return math.max(0, entry._bagTotal - entry._bagUsed)
+            end
+        end
         if not inv then
-            if sortMode == "bagspace" and PBAM.CurrentTab == "Inventory" and PBAM.Bridge and PBAM.Bridge.RequestInventory then
-                -- Always queue this bot for inventory request (we want ALL bots eventually)
+            -- Skip individual requests if bulk is in progress to avoid duplicates
+            if sortMode == "bagspace" and PBAM.CurrentTab == "Inventory" and PBAM.Bridge and PBAM.Bridge.RequestInventory and (not PBAM.Bridge.InventoryBulk or PBAM.Bridge.InventoryBulk.loading == false) then
                 table.insert(missingInventoryNames, entry.name)
             end
             entry._bagUsed = 0
             entry._bagTotal = 0
             return math.huge
         end
-        entry._bagUsed = tonumber(inv.bagUsed) or 0
-        entry._bagTotal = tonumber(inv.bagTotal) or 0
-        if inv.loading then return math.huge end
-        return math.max(0, entry._bagTotal - entry._bagUsed)
+        entry._bagUsed = 0
+        entry._bagTotal = 0
+        return math.huge
     end
 
     local filteredPlayer, filtered = nil, {}
@@ -1178,26 +1444,36 @@ function PBAM.RefreshRosterDisplay()
         end
     end
 
-    if sortMode == "bagspace" and PBAM.CurrentTab == "Inventory" and PBAM.Bridge and PBAM.Bridge.RequestInventory then
-        local sentCount = 0
-        for _, name in ipairs(missingInventoryNames) do
-            if sentCount >= ROSTER_SORT_MAX_INFLIGHT then break end
-            local key = string.lower(tostring(name or ""))
-            if key ~= "" and not PBAM.PendingRosterInventoryRequests[key] then
-                PBAM.PendingRosterInventoryRequests[key] = now
-                PBAM.Bridge.RequestInventory(name)
-                sentCount = sentCount + 1
+    if sortMode == "bagspace" and PBAM.CurrentTab == "Inventory" and PBAM.Bridge then
+        if PBAM.Bridge.RequestInventoryBulk and #missingInventoryNames > 0 and (not PBAM._LastInventoryBulkRequest or (now - PBAM._LastInventoryBulkRequest) >= ROSTER_SORT_REQUEST_TTL) then
+            PBAM._LastInventoryBulkRequest = now
+            PBAM.Bridge.RequestInventoryBulk()
+        elseif PBAM.Bridge.RequestInventory then
+            local sentCount = 0
+            for _, name in ipairs(missingInventoryNames) do
+                if sentCount >= ROSTER_SORT_MAX_INFLIGHT then break end
+                local key = string.lower(tostring(name or ""))
+                if key ~= "" and not PBAM.PendingRosterInventoryRequests[key] then
+                    PBAM.PendingRosterInventoryRequests[key] = now
+                    PBAM.Bridge.RequestInventory(name)
+                    sentCount = sentCount + 1
+                end
             end
         end
-    elseif sortMode == "profession" and PBAM.CurrentTab == "Professions" and PBAM.Bridge and PBAM.Bridge.RequestBotSkills then
-        local sentCount = 0
-        for _, name in ipairs(missingSkillNames) do
-            if sentCount >= ROSTER_SORT_MAX_INFLIGHT then break end
-            local key = string.lower(tostring(name or ""))
-            if key ~= "" and not PBAM.PendingRosterSkillRequests[key] then
-                PBAM.PendingRosterSkillRequests[key] = now
-                PBAM.Bridge.RequestBotSkills(name)
-                sentCount = sentCount + 1
+    elseif sortMode == "profession" and PBAM.CurrentTab == "Professions" and PBAM.Bridge then
+        if PBAM.Bridge.RequestBotSkillsBulk and #missingSkillNames > 0 and (not PBAM._LastBotSkillsBulkRequest or (now - PBAM._LastBotSkillsBulkRequest) >= ROSTER_SORT_REQUEST_TTL) then
+            PBAM._LastBotSkillsBulkRequest = now
+            PBAM.Bridge.RequestBotSkillsBulk()
+        elseif PBAM.Bridge.RequestBotSkills then
+            local sentCount = 0
+            for _, name in ipairs(missingSkillNames) do
+                if sentCount >= ROSTER_SORT_MAX_INFLIGHT then break end
+                local key = string.lower(tostring(name or ""))
+                if key ~= "" and not PBAM.PendingRosterSkillRequests[key] then
+                    PBAM.PendingRosterSkillRequests[key] = now
+                    PBAM.Bridge.RequestBotSkills(name)
+                    sentCount = sentCount + 1
+                end
             end
         end
     end
@@ -1282,8 +1558,8 @@ function PBAM.RefreshRosterDisplay()
         table.sort(group.entries, function(a, b)
             if sortMode == "profession" then
                 local aEntry, bEntry = a.source or a, b.source or b
-                local aSkill = tonumber(a.profession and a.profession.value) or 0
-                local bSkill = tonumber(b.profession and b.profession.value) or 0
+                local aSkill = tonumber(a.profession and (a.profession.value or a.profession.rank)) or 0
+                local bSkill = tonumber(b.profession and (b.profession.value or b.profession.rank)) or 0
                 if aSkill ~= bSkill then return aSkill > bSkill end
                 return string.lower(aEntry.name or "") < string.lower(bEntry.name or "")
             elseif sortMode == "bagspace" then
@@ -1301,6 +1577,60 @@ function PBAM.RefreshRosterDisplay()
     local SIDEBAR_W = 250
     local renderedRows = 0
 
+    local function AcquireRosterRow()
+        PBAM.BotListRowPoolUsed = (PBAM.BotListRowPoolUsed or 0) + 1
+        local rowFrame = PBAM.BotListRowPool[PBAM.BotListRowPoolUsed]
+        if not rowFrame then
+            rowFrame = CreateFrame("Button", nil, content)
+            rowFrame:EnableMouse(true)
+            rowFrame.bg = rowFrame:CreateTexture(nil, "BACKGROUND")
+            rowFrame.bg:SetAllPoints()
+            rowFrame.bg:SetTexture(BG_TEXTURE)
+            rowFrame.classIcon = rowFrame:CreateTexture(nil, "OVERLAY")
+            rowFrame.classIcon:SetSize(18, 18)
+            rowFrame.classIcon:SetPoint("LEFT", rowFrame, "LEFT", 6, 0)
+            rowFrame.classBar = rowFrame:CreateTexture(nil, "OVERLAY")
+            rowFrame.classBar:SetWidth(3)
+            rowFrame.classBar:SetPoint("LEFT", rowFrame.classIcon, "RIGHT", 5, 0)
+            rowFrame.nameFs = rowFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            rowFrame.nameFs:SetPoint("LEFT", rowFrame.classBar, "RIGHT", 6, 0)
+            rowFrame.nameFs:SetPoint("RIGHT", rowFrame, "RIGHT", -72, 0)
+            rowFrame.nameFs:SetJustifyH("LEFT")
+            rowFrame.levelFs = rowFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            rowFrame.dot = rowFrame:CreateTexture(nil, "OVERLAY")
+            rowFrame.dot:SetSize(6, 6)
+            rowFrame.dot:SetPoint("RIGHT", rowFrame, "RIGHT", -40, 1)
+            rowFrame.dot:SetTexture(BG_TEXTURE)
+            PBAM.BotListRowPool[PBAM.BotListRowPoolUsed] = rowFrame
+        end
+        rowFrame:Show()
+        rowFrame:ClearAllPoints()
+        rowFrame.levelFs:ClearAllPoints()
+        return rowFrame
+    end
+
+    local function AcquireRosterHeader(height, indent)
+        PBAM.BotListHeaderPoolUsed = (PBAM.BotListHeaderPoolUsed or 0) + 1
+        local header = PBAM.BotListHeaderPool[PBAM.BotListHeaderPoolUsed]
+        if not header then
+            header = CreateFrame("Frame", nil, content)
+            header.bg = header:CreateTexture(nil, "BACKGROUND")
+            header.bg:SetAllPoints()
+            header.bg:SetTexture(BG_TEXTURE)
+            header.text = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            PBAM.BotListHeaderPool[PBAM.BotListHeaderPoolUsed] = header
+        end
+        header:Show()
+        header:ClearAllPoints()
+        header:SetHeight(height)
+        header:SetWidth(SIDEBAR_W - 20)
+        header:SetPoint("TOPLEFT", content, "TOPLEFT", 8, rowY)
+        header.text:ClearAllPoints()
+        header.text:SetPoint("LEFT", header, "LEFT", indent or 8, 0)
+        table.insert(PBAM.BotListHeaders, header)
+        return header
+    end
+
     local function RenderRosterRow(entry)
         local rowEntry = entry
         local profession = rowEntry and rowEntry.profession or nil
@@ -1312,31 +1642,23 @@ function PBAM.RefreshRosterDisplay()
         local level = entry.level or 0
         local isAlive = entry.alive
 
-        local rowFrame = CreateFrame("Button", nil, content)
+        local rowFrame = AcquireRosterRow()
         rowFrame:SetHeight(rowH)
         rowFrame:SetWidth(SIDEBAR_W - 20)
         rowFrame:SetPoint("TOPLEFT", content, "TOPLEFT", 8, rowY)
-        rowFrame:EnableMouse(true)
 
-        local bg = rowFrame:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints()
-        bg:SetTexture(BG_TEXTURE)
+        local bg = rowFrame.bg
         local selected = lower == PBAM.SelectedBotLower
         bg:SetVertexColor(selected and 0.18 or 0.12, selected and 0.16 or 0.11, selected and 0.10 or 0.09, selected and 0.95 or 1.0)
         bg:Show()
-        rowFrame.bg = bg
 
-        local classIcon = rowFrame:CreateTexture(nil, "OVERLAY")
-        classIcon:SetSize(18, 18)
-        classIcon:SetPoint("LEFT", rowFrame, "LEFT", 6, 0)
+        local classIcon = rowFrame.classIcon
         local iconTexture, left, right, top, bottom = PBAM.GetClassIcon(className)
         classIcon:SetTexture(iconTexture)
         if left then classIcon:SetTexCoord(left, right, top, bottom) else classIcon:SetTexCoord(0, 1, 0, 1) end
 
-        local classBar = rowFrame:CreateTexture(nil, "OVERLAY")
-        classBar:SetWidth(3)
+        local classBar = rowFrame.classBar
         classBar:SetHeight(rowH - 4)
-        classBar:SetPoint("LEFT", classIcon, "RIGHT", 5, 0)
         classBar:SetTexture(BG_TEXTURE)
         if classColor then
             local r, g, b = tonumber(classColor:sub(1,2), 16)/255, tonumber(classColor:sub(3,4), 16)/255, tonumber(classColor:sub(5,6), 16)/255
@@ -1345,13 +1667,10 @@ function PBAM.RefreshRosterDisplay()
             classBar:SetVertexColor(0.5, 0.5, 0.5)
         end
 
-        local nameFs = rowFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        nameFs:SetPoint("LEFT", classBar, "RIGHT", 6, 0)
-        nameFs:SetPoint("RIGHT", rowFrame, "RIGHT", -72, 0)
-        nameFs:SetJustifyH("LEFT")
+        local nameFs = rowFrame.nameFs
         nameFs:SetText("|cff" .. (classColor or "ffffff") .. name .. (entry.isPlayer and " |cffd4af37(You)|r" or ""))
 
-        local levelFs = rowFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        local levelFs = rowFrame.levelFs
         levelFs:SetPoint("RIGHT", rowFrame, "RIGHT", -8, 0)
         if sortMode == "bagspace" then
             local used = tonumber(entry._bagUsed) or 0
@@ -1362,16 +1681,13 @@ function PBAM.RefreshRosterDisplay()
             levelFs:SetText(string.format("%d/%d", free, total))
         elseif sortMode == "profession" and profession then
             levelFs:SetPoint("RIGHT", rowFrame, "RIGHT", -60, 0)
-            levelFs:SetText(string.format("%d/%d", tonumber(profession.value) or 0, tonumber(profession.max) or 0))
+            levelFs:SetText(string.format("%d/%d", tonumber(profession.value or profession.rank) or 0, tonumber(profession.max or profession.maxRank) or 0))
         else
             levelFs:SetText("Lv." .. level)
         end
         levelFs:SetTextColor(0.55, 0.55, 0.55, 1.0)
 
-        local dot = rowFrame:CreateTexture(nil, "OVERLAY")
-        dot:SetSize(6, 6)
-        dot:SetPoint("RIGHT", rowFrame, "RIGHT", -40, 1)
-        dot:SetTexture(BG_TEXTURE)
+        local dot = rowFrame.dot
         dot:SetVertexColor(isAlive and 0.27 or 0.80, 1.0, isAlive and 0.53 or 0.22)
 
         rowFrame:SetScript("OnMouseDown", function(self, btn)
@@ -1394,21 +1710,10 @@ function PBAM.RefreshRosterDisplay()
         if #group.entries > 0 then
             if sortMode == "profession" then
                 if group.mainHeader ~= lastMainHeader then
-                    local mainHeader = CreateFrame("Frame", nil, content)
-                    mainHeader:SetHeight(mainHeaderH)
-                    mainHeader:SetWidth(SIDEBAR_W - 20)
-                    mainHeader:SetPoint("TOPLEFT", content, "TOPLEFT", 8, rowY)
-                    table.insert(PBAM.BotListHeaders, mainHeader)
-
-                    local mainHeaderBg = mainHeader:CreateTexture(nil, "BACKGROUND")
-                    mainHeaderBg:SetAllPoints()
-                    mainHeaderBg:SetTexture(BG_TEXTURE)
-                    mainHeaderBg:SetVertexColor(0.22, 0.18, 0.12, 0.98)
-
-                    local mainHeaderFs = mainHeader:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-                    mainHeaderFs:SetPoint("LEFT", mainHeader, "LEFT", 8, 0)
-                    mainHeaderFs:SetText(group.mainHeader)
-                    mainHeaderFs:SetTextColor(1.0, 0.82, 0.24, 1.0)
+                    local mainHeader = AcquireRosterHeader(mainHeaderH, 8)
+                    mainHeader.bg:SetVertexColor(0.22, 0.18, 0.12, 0.98)
+                    mainHeader.text:SetText(group.mainHeader)
+                    mainHeader.text:SetTextColor(1.0, 0.82, 0.24, 1.0)
 
                     rowY = rowY - mainHeaderH
                     renderedRows = renderedRows + 1
@@ -1419,41 +1724,19 @@ function PBAM.RefreshRosterDisplay()
                 local professionKey = group.mainHeader .. ":" .. group.subHeader
                 if not seenProfessions[professionKey] then
                     seenProfessions[professionKey] = true
-                    local header = CreateFrame("Frame", nil, content)
-                    header:SetHeight(headerH)
-                    header:SetWidth(SIDEBAR_W - 20)
-                    header:SetPoint("TOPLEFT", content, "TOPLEFT", 8, rowY)
-                    table.insert(PBAM.BotListHeaders, header)
-
-                    local headerBg = header:CreateTexture(nil, "BACKGROUND")
-                    headerBg:SetAllPoints()
-                    headerBg:SetTexture(BG_TEXTURE)
-                    headerBg:SetVertexColor(0.18, 0.15, 0.10, 0.95)
-
-                    local headerFs = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-                    headerFs:SetPoint("LEFT", header, "LEFT", 16, 0)
-                    headerFs:SetText(group.subHeader .. ":")
-                    headerFs:SetTextColor(0.83, 0.69, 0.22, 1.0)
+                    local header = AcquireRosterHeader(headerH, 16)
+                    header.bg:SetVertexColor(0.18, 0.15, 0.10, 0.95)
+                    header.text:SetText(group.subHeader .. ":")
+                    header.text:SetTextColor(0.83, 0.69, 0.22, 1.0)
 
                     rowY = rowY - headerH
                     renderedRows = renderedRows + 1
                 end
             elseif sortMode ~= "alpha" and sortMode ~= "bagspace" then
-                local header = CreateFrame("Frame", nil, content)
-                header:SetHeight(headerH)
-                header:SetWidth(SIDEBAR_W - 20)
-                header:SetPoint("TOPLEFT", content, "TOPLEFT", 8, rowY)
-                table.insert(PBAM.BotListHeaders, header)
-
-                local headerBg = header:CreateTexture(nil, "BACKGROUND")
-                headerBg:SetAllPoints()
-                headerBg:SetTexture(BG_TEXTURE)
-                headerBg:SetVertexColor(0.18, 0.15, 0.10, 0.95)
-
-                local headerFs = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-                headerFs:SetPoint("LEFT", header, "LEFT", 8, 0)
-                headerFs:SetText(group.label .. ":")
-                headerFs:SetTextColor(0.83, 0.69, 0.22, 1.0)
+                local header = AcquireRosterHeader(headerH, 8)
+                header.bg:SetVertexColor(0.18, 0.15, 0.10, 0.95)
+                header.text:SetText(group.label .. ":")
+                header.text:SetTextColor(0.83, 0.69, 0.22, 1.0)
 
                 rowY = rowY - headerH
                 renderedRows = renderedRows + 1
@@ -1463,6 +1746,13 @@ function PBAM.RefreshRosterDisplay()
                 RenderRosterRow(entry)
             end
         end
+    end
+
+    for i = (PBAM.BotListRowPoolUsed or 0) + 1, #(PBAM.BotListRowPool or {}) do
+        if PBAM.BotListRowPool[i] then PBAM.BotListRowPool[i]:Hide() end
+    end
+    for i = (PBAM.BotListHeaderPoolUsed or 0) + 1, #(PBAM.BotListHeaderPool or {}) do
+        if PBAM.BotListHeaderPool[i] then PBAM.BotListHeaderPool[i]:Hide() end
     end
 
     local totalHeight = math.max(50, -rowY + 8)
@@ -1565,7 +1855,17 @@ loginFrame:SetScript("OnEvent", function(self, event)
     self:UnregisterEvent(event)
     PBAM.DebugPrint("PBAltManager v" .. PBAM.Version .. " loaded")
     PBAM.DebugPrint("Slash commands: /pbam, /pbaltmanager")
-    -- Request initial data
-    PBAM.Bridge.RequestRoster()
-    PBAM.Bridge.RequestBotDetails()
+    if PBAM.RegisterOptionsPanel then PBAM.RegisterOptionsPanel() end
+    PBAM.InitialRefreshReady = false
+    PBAM.After(5.0, function()
+        PBAM.InitialRefreshReady = true
+        if PBAM.Bridge then
+            PBAM.Bridge.SendHello()
+            PBAM.Bridge.RequestRoster()
+            PBAM.Bridge.RequestBotDetails()
+            PBAM.Bridge.RequestStates()
+            PBAM.Bridge.RequestStats()
+        end
+        if PBAM.MainWindow and PBAM.MainWindow:IsShown() and PBAM.RefreshRosterDisplay then PBAM.RefreshRosterDisplay() end
+    end)
 end)

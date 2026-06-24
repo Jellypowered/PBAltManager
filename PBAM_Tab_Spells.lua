@@ -61,10 +61,10 @@ local SPELL_FILTERS = {
             ["tailoring"] = true,
         },
         patterns = {
-            "^enchant ",
-            "^mill ",
-            "^prospect ",
-            "^smelt ",
+            --"^enchant ",
+            --"^mill ",
+            --"^prospect ",
+            --"^smelt ",
         },
     },
 }
@@ -171,6 +171,10 @@ PBAM.RegisterTab("Spells", "Spells", 5, function(panel)
         if botName == PBAM.SelectedBot and PBAM.CurrentTab == "Spells" and panel.OnBotSelect then
             panel.OnBotSelect(botName)
         end
+    end)
+    PBAM.Bridge.RegisterCallback("CAST_SPELLResult", function(result)
+        if PBAM.CurrentTab ~= "Spells" or not result or result.botName ~= PBAM.SelectedBot then return end
+        PBAM.SetStatusText(panel.StatusText, "Cast " .. (result.result == "OK" and "ok" or ("failed: " .. tostring(result.reason or "unknown"))), result.result == "OK" and "success" or "error")
     end)
 
     local emptyFs = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -447,7 +451,7 @@ PBAM.RegisterTab("Spells", "Spells", 5, function(panel)
         end
         GameTooltip:Show()
 
-        local lines = { "Legacy Cast button sends /w bot cast <spell>." }
+        local lines = { "Cast button uses native bridge RUN~CAST_SPELL when available." }
         if selectedTarget and selectedTarget ~= "" then
             table.insert(lines, "Planned target: " .. tostring(selectedTarget))
             table.insert(lines, "Explicit target syntax is not bridge-confirmed yet.")
@@ -502,13 +506,10 @@ PBAM.RegisterTab("Spells", "Spells", 5, function(panel)
             entry.onSelect = function(value, entryData)
                 selectedTarget = value or ""
                 targetDropdownBtn:SetText(entryData.label or tostring(entryData.value))
-                PBAM.SetStatusText(statusFs, selectedTarget ~= "" and ("Target selected: " .. tostring(selectedTarget) .. ". Cast still uses legacy whisper fallback.") or "Casting will use the bot's current target.", "info")
+                PBAM.SetStatusText(statusFs, selectedTarget ~= "" and ("Target selected: " .. tostring(selectedTarget) .. ".") or "Casting will send no target.", "info")
             end
         end
-        -- Update selectedTarget for compatibility with existing code
-        if selectedTarget == "" then
-            selectedTarget = values[1] and values[1].value or ""
-        end
+        -- Keep blank target blank: empty target means cast without explicit target.
     end
 
     panel.OnRefresh = function(botName)
@@ -557,7 +558,7 @@ PBAM.RegisterTab("Spells", "Spells", 5, function(panel)
         if sb.loading then
             PBAM.SetStatusText(statusFs, "Loading spellbook...", "loading")
         else
-            PBAM.SetStatusText(statusFs, tostring(#filtered) .. " spells shown. Tooltips use SpellByID when available. Cast uses legacy whisper fallback.", "info")
+            PBAM.SetStatusText(statusFs, tostring(#filtered) .. " spells shown. Tooltips use SpellByID when available. Cast uses native bridge endpoint.", "info")
         end
 
         if #filtered == 0 then
@@ -586,19 +587,16 @@ PBAM.RegisterTab("Spells", "Spells", 5, function(panel)
             r.cast:Show()
             PBAM.SetButtonEnabled(r.cast, true, nil)
             r.cast:SetScript("OnClick", function()
-                -- Legacy fallback by design for Phase 5/7: spellbook listing is bridge-backed,
-                -- but generic spell execution still uses /w bot cast <spell> until a native
-                -- RUN~CAST_SPELL bridge endpoint exists.
                 local spellText = spell.name or GetSpellDisplayName(spell) or tostring(spell.spellId)
-                local cmd = "cast " .. spellText
-                if selectedTarget and selectedTarget ~= "" then
-                    cmd = cmd .. " on " .. selectedTarget
-                    PBAM.SetStatusText(statusFs, "Casting " .. GetSpellDisplayName(spell) .. " using legacy whisper. Target: " .. tostring(selectedTarget), "info")
-                else
-                    PBAM.SetStatusText(statusFs, "Casting " .. GetSpellDisplayName(spell) .. " using legacy whisper (no target specified).", "warn")
+                if PBAM.Bridge and PBAM.Bridge.CastSpell and spellId > 0 then
+                    PBAM.Bridge.CastSpell(botName, spellId, selectedTarget or "")
+                    PBAM.SetStatusText(statusFs, "Cast request sent for " .. GetSpellDisplayName(spell) .. (selectedTarget and selectedTarget ~= "" and (" on " .. tostring(selectedTarget)) or "") .. ".", "info")
+                    return
                 end
-                DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Cast command: " .. cmd)
+                local cmd = "cast " .. spellText
+                if selectedTarget and selectedTarget ~= "" then cmd = cmd .. " on " .. selectedTarget end
                 SendChatMessage(cmd, "WHISPER", nil, botName)
+                PBAM.SetStatusText(statusFs, "Legacy cast command sent for " .. GetSpellDisplayName(spell) .. ".", "warn")
             end)
         end
         content:SetHeight(20 + #filtered * ROW_H)

@@ -244,9 +244,36 @@ PBAM.RegisterTab("Roster", "Roster", 1, function(panel)
     end
 
     PBAM.CreateSectionHeader(rightContent, "Current Quests", -10, 12)
+    local shareGroupCheck = CreateFrame("CheckButton", nil, rightContent, "UICheckButtonTemplate")
+    shareGroupCheck:SetSize(22, 22)
+    shareGroupCheck:SetPoint("TOPRIGHT", rightContent, "TOPRIGHT", -26, -4)
+    shareGroupCheck:SetChecked(PBAMConfig and PBAMConfig.ShareQuestsToGroup and true or false)
+    shareGroupCheck.text = shareGroupCheck:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    shareGroupCheck.text:SetPoint("RIGHT", shareGroupCheck, "LEFT", -4, 2)
+    shareGroupCheck.text:SetText("Share to group")
+    shareGroupCheck:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Share to group/raid", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("Unchecked: Share uses the selected bot's current target as validation target.", 0.8, 0.8, 0.8, true)
+        GameTooltip:AddLine("Checked: Share sends no target and lets the bridge share group-wide.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    shareGroupCheck:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    shareGroupCheck:SetScript("OnClick", function(self)
+        PBAMConfig.ShareQuestsToGroup = self:GetChecked() and true or false
+        if PBAM.OptionsPanel and PBAM.OptionsPanel.shareGroupCheck then PBAM.OptionsPanel.shareGroupCheck:SetChecked(PBAMConfig.ShareQuestsToGroup) end
+    end)
+    panel.ShareQuestGroupWideCheck = shareGroupCheck
     local questStatus = rightContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     questStatus:SetPoint("TOPLEFT", rightContent, "TOPLEFT", 12, -32); PBAM.WrapFontString(questStatus, RIGHT_CONTENT_W - 24); questStatus:SetTextColor(0.55,0.55,0.55,1)
     panel.StatusText = questStatus
+
+    local function SelectedBotTargetName(botName)
+        local unit = PBAM.FindBotUnit and PBAM.FindBotUnit(botName) or nil
+        if unit and UnitExists and UnitExists(unit .. "target") then return UnitName(unit .. "target") end
+        local state = PBAM.Bridge and PBAM.Bridge.States and PBAM.Bridge.States[string.lower(tostring(botName or ""))]
+        return state and state.target or nil
+    end
 
     local function QuestRow(i)
         if questRows[i] then questRows[i]:Show(); return questRows[i] end
@@ -272,8 +299,8 @@ PBAM.RegisterTab("Roster", "Roster", 1, function(panel)
         r.share:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:SetText("Share quest", 1, 0.82, 0.22, true)
-            GameTooltip:AddLine("Playerbot does not support bot-to-bot quest sharing.", 0.8, 0.8, 0.8, true)
-            GameTooltip:AddLine("Use /w <botname> q <questId> in chat to share with a bot.", 0.6, 0.6, 0.6, true)
+            GameTooltip:AddLine("Unchecked: share to the selected bot's current target.", 0.8, 0.8, 0.8, true)
+            GameTooltip:AddLine("Checked: share to group/party/raid through the bridge.", 0.6, 0.6, 0.6, true)
             GameTooltip:Show()
         end)
         r.share:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -399,41 +426,34 @@ PBAM.RegisterTab("Roster", "Roster", 1, function(panel)
             end)
             r:SetScript("OnLeave", function() GameTooltip:Hide() end)
             PBAM.SetButtonEnabled(r.abandon, not isPlayer, "Quest actions are only available for bots.")
-            PBAM.SetButtonEnabled(r.share, isPlayer, "Bot-to-bot quest sharing is not supported by playerbot.")
+            PBAM.SetButtonEnabled(r.share, not isPlayer, "Select a bot quest to share it to target or group.")
             local questId = tonumber(q.questId) or 0
             r.abandon:SetScript("OnClick", function()
-                if not isPlayer then
-                    local fullCommand = "drop " .. questId
-                    DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Abandon: bot=" .. tostring(botName) .. " cmd=" .. tostring(fullCommand))
-                    if SendChatMessage then
-                        SendChatMessage(fullCommand, "WHISPER", nil, botName)
-                        -- Request bridge refresh first, then update UI after a short delay
-                        After(0.5, function()
-                            if PBAM.SelectedBot == botName and PBAM.Bridge.RequestQuests then
-                                PBAM.Bridge.RequestQuests(botName)
-                            end
+                if not isPlayer and PBAM.Bridge and PBAM.Bridge.QuestAbandon then
+                    PBAM.ConfirmDestructive("Abandon " .. tostring(questTitle or ("quest " .. questId)) .. " on " .. tostring(botName) .. "?", function()
+                        PBAM.Bridge.QuestAbandon(botName, questId)
+                        PBAM.ChatMessage("[PBAM] Bridge quest abandon: bot=" .. tostring(botName) .. " quest=" .. tostring(questId))
+                        After(0.75, function()
+                            if PBAM.SelectedBot == botName and PBAM.Bridge.RequestQuests then PBAM.Bridge.RequestQuests("ALL", botName) end
                         end)
-                        After(1.5, function()
-                            if panel.OnRefresh and PBAM.SelectedBot == botName then panel.OnRefresh(botName) end
-                        end)
-                    end
+                        After(1.5, function() if panel.OnRefresh and PBAM.SelectedBot == botName then panel.OnRefresh(botName) end end)
+                    end)
                 else
-                    DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Cannot abandon: player selected")
+                    PBAM.ChatMessage("[PBAM] Cannot abandon: player selected or bridge unavailable")
                 end
             end)
             r.share:SetScript("OnClick", function()
-                if not isPlayer then
-                    -- Playerbot does not support bot-initiated quest sharing.
-                    -- Only the master (player) can share quests with bots via /w bot q <id>
-                    DEFAULT_CHAT_FRAME:AddMessage("[PBAM] Bot quest sharing not supported by playerbot. Use /w " .. botName .. " q " .. questId .. " from chat to share a quest with this bot.")
-                else
-                    -- For local player, use the normal quest share mechanism
-                    if GetQuestLogLink then
-                        local questLink = GetQuestLogLink(questId)
-                        if questLink then
-                            SendChatMessage("share " .. questLink, "SAY")
-                        end
+                if not isPlayer and PBAM.Bridge and PBAM.Bridge.QuestShare then
+                    local groupWide = shareGroupCheck and shareGroupCheck:GetChecked()
+                    local targetName = groupWide and "" or SelectedBotTargetName(botName)
+                    if not groupWide and (not targetName or targetName == "") then
+                        PBAM.ChatMessage("[PBAM] Cannot share: selected bot has no visible target. Enable 'Share to group' to share group-wide.")
+                        return
                     end
+                    PBAM.Bridge.QuestShare(botName, questId, targetName or "")
+                    PBAM.ChatMessage("[PBAM] Bridge quest share (" .. (groupWide and "group-wide" or ("target=" .. tostring(targetName))) .. "): bot=" .. tostring(botName) .. " quest=" .. tostring(questId))
+                else
+                    PBAM.ChatMessage("[PBAM] Cannot share: player selected or bridge unavailable")
                 end
             end)
             local rowH = math.max(20, (r.name.GetStringHeight and r.name:GetStringHeight() or 14) + 20)
@@ -452,6 +472,18 @@ PBAM.RegisterTab("Roster", "Roster", 1, function(panel)
         local key = string.lower(tostring(botName))
         if key == string.lower(tostring(PBAM.SelectedBot)) then
             RefreshQuests(PBAM.SelectedBot, false)
+        end
+    end)
+    PBAM.Bridge.RegisterCallback("NativeActionResult", function(result)
+        if not result or not result.type then return end
+        if result.type ~= "QUEST_ABANDON" and result.type ~= "QUEST_SHARE" then return end
+        if result.botName == PBAM.SelectedBot then
+            local ok = result.result == "OK"
+            local msg = "[PBAM] " .. tostring(result.type) .. " " .. tostring(result.result)
+            if not ok or (result.reason and result.reason ~= "" and result.reason ~= "OK") then msg = msg .. " " .. tostring(result.reason or "") end
+            if result.summary and result.summary ~= "" then msg = msg .. " " .. tostring(result.summary) end
+            PBAM.ChatMessage(msg)
+            if ok and PBAM.Bridge.RequestQuests then After(0.75, function() PBAM.Bridge.RequestQuests("ALL", result.botName) end) end
         end
     end)
     PBAM.Bridge.RegisterCallback("BotReputationsUpdated", function(botName) if botName == PBAM.SelectedBot then RefreshReps(botName, false) end end)

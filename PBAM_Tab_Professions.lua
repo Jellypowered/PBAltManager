@@ -13,6 +13,11 @@ local ICONS = {
     fishing="Interface\\Icons\\Trade_Fishing", firstaid="Interface\\Icons\\Spell_Holy_SealOfSacrifice", ["first aid"]="Interface\\Icons\\Spell_Holy_SealOfSacrifice",
 }
 
+local EQUIP_SLOT_NAMES = {
+    [1]="Head", [2]="Neck", [3]="Shoulder", [4]="Shirt", [5]="Chest", [6]="Waist", [7]="Legs", [8]="Feet", [9]="Wrist", [10]="Hands",
+    [11]="Finger 1", [12]="Finger 2", [13]="Trinket 1", [14]="Trinket 2", [15]="Back", [16]="Main Hand", [17]="Off Hand", [18]="Ranged", [19]="Tabard",
+}
+
 local SKILL_ID_FALLBACKS = { cooking=185, firstaid=129, ["first aid"]=129, fishing=356, mining=186 }
 
 -- Empty-state message position when no bot is selected.
@@ -88,7 +93,7 @@ local HIDDEN_RECIPE_SPELL_NAMES = {
 local HIDDEN_RECIPE_SPELL_PATTERNS = {
     -- Example: "^smelt ", -- uncomment/add if a non-craft utility family should be hidden later
     "^mill ",
-    "^enchant ",
+    --"^enchant ",
 }
 
 -- Special clickable profession spells that are useful in the recipe list but do not behave like
@@ -142,6 +147,11 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
     local MARGIN, PROF_ROW_H, RECIPE_ROW_H = 12, 52, 72
     local profRows, recipeRows = {}, {}
     local selectedSkillId, selectedSkillName, statusText, lastBotName
+    local targetMode, selectedTargetItem = "NONE", nil
+    local targetModeDropdown, targetItemDropdown
+    local RefreshTargetItemDropdown
+    local RefreshTradeTargetStatus
+    local OpenTradeForSelectedBot
     local craftQueue = { active=false, remaining=0, botName=nil, skillId=0, spellId=0, itemId=0, recipeName="", waiting=false }
     local queueTimer = CreateFrame("Frame", nil, panel)
     queueTimer:Hide()
@@ -187,6 +197,36 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
             end
         end
     end)
+    PBAM.Bridge.RegisterCallback("CAST_SPELLResult", function(result)
+        if result and result.botName == PBAM.SelectedBot and PBAM.CurrentTab == "Professions" and statusText then
+            statusText:SetText((result.result == "OK" and "|cff40ff40Cast queued.|r" or ("|cffff6060Cast failed: " .. tostring(result.reason or "unknown") .. "|r")))
+            if result.result == "OK" and selectedSkillId then PBAM.Bridge.RequestProfessionRecipes(result.botName, selectedSkillId) end
+        end
+    end)
+    PBAM.Bridge.RegisterCallback("InventoryUpdated", function(botName)
+        if botName == PBAM.SelectedBot and PBAM.CurrentTab == "Professions" and RefreshTargetItemDropdown then RefreshTargetItemDropdown() end
+    end)
+
+    local tradeEventFrame = CreateFrame("Frame")
+    tradeEventFrame:RegisterEvent("TRADE_SHOW")
+    tradeEventFrame:RegisterEvent("TRADE_CLOSED")
+    tradeEventFrame:RegisterEvent("TRADE_TARGET_ITEM_CHANGED")
+    tradeEventFrame:RegisterEvent("TRADE_PLAYER_ITEM_CHANGED")
+    tradeEventFrame:RegisterEvent("TRADE_ACCEPT_UPDATE")
+    tradeEventFrame:SetScript("OnEvent", function(_, event)
+        if PBAM.CurrentTab ~= "Professions" or targetMode ~= "TRADE" then return end
+        if event == "TRADE_CLOSED" then
+            targetMode = "NONE"
+            selectedTargetItem = nil
+            if targetModeDropdown then targetModeDropdown:SetValue("NONE") end
+            if RefreshTargetItemDropdown then RefreshTargetItemDropdown() end
+            if panel.RefreshRecipes then panel.RefreshRecipes() end
+            if statusText then statusText:SetText("Trade closed. Target reset to normal craft.") end
+            return
+        end
+        if RefreshTargetItemDropdown then RefreshTargetItemDropdown() end
+        if RefreshTradeTargetStatus then RefreshTradeTargetStatus() end
+    end)
 
     local emptyFs = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     emptyFs:SetPoint("CENTER", panel, "CENTER", EMPTY_MESSAGE_X_OFFSET, EMPTY_MESSAGE_Y_OFFSET)
@@ -196,9 +236,26 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
     local header = CreateFrame("Frame", nil, panel)
     header:SetPoint("TOPLEFT", panel, "TOPLEFT", MARGIN, -MARGIN)
     header:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -MARGIN, -MARGIN)
-    header:SetHeight(52)
+    header:SetHeight(96)
     PBAM.ApplyBackdrop(header, 0.55)
     PBAM.CreateSectionHeader(header, "Professions", -10, 13)
+
+    local targetModeLabel = header:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    targetModeLabel:SetPoint("TOPLEFT", header, "TOPLEFT", 12, -38)
+    targetModeLabel:SetText("Target")
+    targetModeDropdown = PBAM.CreateDropdown(header, {})
+    targetModeDropdown:SetPoint("LEFT", targetModeLabel, "RIGHT", -12, -2)
+    UIDropDownMenu_SetWidth(targetModeDropdown, 150)
+    UIDropDownMenu_SetButtonWidth(targetModeDropdown, 170)
+
+    local targetItemLabel = header:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    targetItemLabel:SetPoint("TOPLEFT", targetModeLabel, "BOTTOMLEFT", 0, -8)
+    targetItemLabel:SetText("Item")
+    targetItemDropdown = PBAM.CreateDropdown(header, {})
+    targetItemDropdown:SetPoint("LEFT", targetItemLabel, "RIGHT", -12, -2)
+    UIDropDownMenu_SetWidth(targetItemDropdown, 250)
+    UIDropDownMenu_SetButtonWidth(targetItemDropdown, 270)
+
     local refreshBtn = CreateFrame("Button", nil, header, "UIPanelButtonTemplate")
     refreshBtn:SetSize(86,22); refreshBtn:SetPoint("BOTTOMRIGHT", header, "BOTTOMRIGHT", -17, 6); refreshBtn:SetText("Refresh")
     refreshBtn:SetScript("OnEnter", function(self)
@@ -236,6 +293,141 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
     recipeScroll:SetScript("OnMouseWheel", function(self, delta) self:SetVerticalScroll(math.max(0, math.min(self:GetVerticalScrollRange(), self:GetVerticalScroll() - delta * 28))) end)
     local recipeContent = CreateFrame("Frame", nil, recipeScroll)
     recipeContent:SetWidth(390); recipeScroll:SetScrollChild(recipeContent)
+
+    local function CleanItemText(text)
+        text = tostring(text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+        text = text:gsub("|Hitem:[^|]+|h%[([^%]]+)%]|h", "%1")
+        return text
+    end
+
+    local function TargetItemLabel(item, prefix)
+        local name
+        if item and item.itemId and item.itemId > 0 and GetItemInfo then name = GetItemInfo(item.itemId) end
+        local text = name or CleanItemText(item and item.text)
+        if text == "" then text = "item " .. tostring(item and item.itemId or 0) end
+        return (prefix or "") .. text
+    end
+
+    local function TradePlayerItemLink()
+        if GetTradePlayerItemLink then
+            return GetTradePlayerItemLink(7) or GetTradePlayerItemLink(6)
+        end
+        return nil
+    end
+
+    RefreshTradeTargetStatus = function()
+        if targetMode ~= "TRADE" then return end
+        local link = TradePlayerItemLink()
+        if link then
+            local name = GetItemInfo and GetItemInfo(link) or CleanItemText(link)
+            if statusText then statusText:SetText("Trade not-traded item: " .. tostring(name or link)) end
+        elseif statusText then
+            statusText:SetText("Trade-slot targeting enabled. Pick your gear below or put an item in the not-traded slot.")
+        end
+    end
+
+    local function PlacePlayerEquipInTrade(slot)
+        if not slot then return end
+        if not TradeFrame or not TradeFrame:IsShown() then
+            OpenTradeForSelectedBot()
+            if statusText then statusText:SetText("Opening trade. Select the gear again once the trade window is visible.") end
+            return
+        end
+        if PickupInventoryItem and ClickTradeButton then
+            ClearCursor()
+            PickupInventoryItem(slot)
+            if CursorHasItem and CursorHasItem() then
+                ClickTradeButton(7)
+                if CursorHasItem and CursorHasItem() then ClickTradeButton(6) end
+                if CursorHasItem and CursorHasItem() then
+                    ClearCursor()
+                    if statusText then statusText:SetText("Could not place item in trade slot. Drag it manually into the not-traded slot.") end
+                else
+                    RefreshTargetItemDropdown()
+                    RefreshTradeTargetStatus()
+                end
+            elseif statusText then
+                statusText:SetText("Could not pick up that equipped item.")
+            end
+        end
+    end
+
+    OpenTradeForSelectedBot = function()
+        if PBAM.SelectedBot and InitiateTrade then
+            InitiateTrade(PBAM.SelectedBot)
+            if statusText then statusText:SetText("Opening trade with " .. tostring(PBAM.SelectedBot) .. ". Put your target item in the not-traded slot.") end
+        elseif statusText then
+            statusText:SetText("Select a bot before using trade-slot targeting.")
+        end
+    end
+
+    RefreshTargetItemDropdown = function()
+        selectedTargetItem = nil
+        local values = {}
+        if targetMode == "BAG" or targetMode == "EQUIP" then
+            local key = PBAM.SelectedBot and string.lower(PBAM.SelectedBot) or ""
+            local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
+            if not inv and PBAM.SelectedBot and PBAM.Bridge.RequestInventory then PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end
+            local source = targetMode == "EQUIP" and (inv and inv.equipmentLocations) or (inv and inv.itemLocations)
+            for idx, item in ipairs(source or {}) do
+                local value = tostring(idx)
+                local prefix = targetMode == "EQUIP" and ((EQUIP_SLOT_NAMES[(tonumber(item.equipSlot) or 0) + 1]) or ("Slot " .. tostring(item.equipSlot or item.slot or 0))) .. ": " or ("Bag " .. tostring(item.bag or 0) .. ", Slot " .. tostring(item.slot or 0) .. ": ")
+                table.insert(values, {
+                    value = value,
+                    label = TargetItemLabel(item, prefix),
+                    icon = (item.itemId and item.itemId > 0 and GetItemIcon and GetItemIcon(item.itemId)) or nil,
+                    tooltipTitle = TargetItemLabel(item),
+                    tooltip = "itemId=" .. tostring(item.itemId or 0) .. "\n" .. (targetMode == "EQUIP" and ("Equipped slot " .. tostring(item.equipSlot or item.slot or 0)) or ("Bag " .. tostring(item.bag or 0) .. ", Slot " .. tostring(item.slot or 0))),
+                    onSelect = function(_, entry)
+                        selectedTargetItem = entry.item
+                        if statusText then statusText:SetText("Target item selected: " .. TargetItemLabel(entry.item)) end
+                    end,
+                    item = item,
+                })
+            end
+            if #values == 0 then table.insert(values, { value = "", label = inv and "No target items" or "Inventory loading..." }) end
+        elseif targetMode == "TRADE" then
+            local link = TradePlayerItemLink()
+            local label = "Trade not-traded slot"
+            if link then label = "Trade: " .. tostring((GetItemInfo and GetItemInfo(link)) or CleanItemText(link)) end
+            table.insert(values, { value = "", label = label, icon = (link and GetItemIcon and GetItemIcon(link)) or nil, tooltip = "Put your target item in the trade window's not-traded slot." })
+            for slot = 1, 19 do
+                local equipLink = GetInventoryItemLink and GetInventoryItemLink("player", slot) or nil
+                if equipLink then
+                    local name = (GetItemInfo and GetItemInfo(equipLink)) or CleanItemText(equipLink)
+                    table.insert(values, {
+                        value = "PLAYER_EQUIP_" .. tostring(slot),
+                        label = "Your " .. tostring(EQUIP_SLOT_NAMES[slot] or ("Slot " .. slot)) .. ": " .. tostring(name or equipLink),
+                        icon = (GetInventoryItemTexture and GetInventoryItemTexture("player", slot)) or nil,
+                        tooltipTitle = tostring(name or equipLink),
+                        tooltip = "Select to place this equipped item into the trade not-traded slot.",
+                        onSelect = function(_, entry)
+                            selectedTargetItem = nil
+                            PlacePlayerEquipInTrade(entry.slot)
+                        end,
+                        slot = slot,
+                    })
+                end
+            end
+        else
+            table.insert(values, { value = "", label = "No item target" })
+        end
+        targetItemDropdown:SetValues(values)
+        local entry = targetItemDropdown:GetSelectedEntry()
+        selectedTargetItem = entry and entry.item or nil
+    end
+
+    local function RefreshTargetModeDropdown()
+        targetModeDropdown:SetValues({
+            { value = "NONE", label = "None / normal craft", onSelect = function() targetMode = "NONE"; RefreshTargetItemDropdown(); if panel.RefreshRecipes then panel.RefreshRecipes() end end },
+            { value = "TRADE", label = "Trade not-traded slot", tooltip = "Automatically opens trade; put your target item in the not-traded slot.", onSelect = function() targetMode = "TRADE"; OpenTradeForSelectedBot(); RefreshTargetItemDropdown(); if panel.RefreshRecipes then panel.RefreshRecipes() end end },
+            { value = "BAG", label = "Bot bag item", tooltip = "Use an exact item location from the bot inventory snapshot.", onSelect = function() targetMode = "BAG"; if PBAM.SelectedBot and PBAM.Bridge.RequestInventory then PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end; RefreshTargetItemDropdown(); if panel.RefreshRecipes then panel.RefreshRecipes() end end },
+            { value = "EQUIP", label = "Bot equipped item", tooltip = "Use an equipped item from the bot inventory snapshot.", onSelect = function() targetMode = "EQUIP"; if PBAM.SelectedBot and PBAM.Bridge.RequestInventory then PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end; RefreshTargetItemDropdown(); if panel.RefreshRecipes then panel.RefreshRecipes() end end },
+        })
+        targetModeDropdown:SetValue(targetMode)
+        RefreshTargetItemDropdown()
+    end
+    RefreshTargetModeDropdown()
 
     local function Clear(rows) for _,r in ipairs(rows) do r:Hide() end end
     local function ProfRow(i)
@@ -354,16 +546,30 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
             PBAM.SetButtonEnabled(r.btn, canCraft, "This recipe cannot be crafted right now.")
             r.btn:SetScript("OnClick", function()
                 statusText:SetText("Crafting one " .. tostring(RecipeName(rec)) .. "...")
-                if special and special.legacyCast and SendChatMessage then
-                    -- Legacy fallback for utility craft spells the bridge rejects as NO_MATERIALS.
-                    SendChatMessage("cast " .. tostring(rec.spellId), "WHISPER", nil, PBAM.SelectedBot)
-                    statusText:SetText("Sent legacy cast for " .. tostring(RecipeName(rec)) .. ".")
+                if targetMode == "TRADE" and PBAM.Bridge.CraftRecipeTarget then
+                    PBAM.Bridge.CraftRecipeTarget(PBAM.SelectedBot, rec.skillId or selectedSkillId, rec.spellId, 0, 0, 0, "TRADE")
+                    statusText:SetText("Sent trade-slot target cast for " .. tostring(RecipeName(rec)) .. ".")
+                elseif (targetMode == "BAG" or targetMode == "EQUIP") and PBAM.Bridge.CraftRecipeTarget then
+                    if not selectedTargetItem or not selectedTargetItem.itemId then
+                        statusText:SetText("Select a target item first.")
+                        return
+                    end
+                    PBAM.Bridge.CraftRecipeTarget(PBAM.SelectedBot, rec.skillId or selectedSkillId, rec.spellId, selectedTargetItem.itemId, selectedTargetItem.bag or 0, selectedTargetItem.slot or 0, targetMode)
+                    statusText:SetText("Sent targeted cast for " .. tostring(RecipeName(rec)) .. " on " .. TargetItemLabel(selectedTargetItem) .. ".")
+                elseif special and special.legacyCast then
+                    if PBAM.Bridge.CastSpell then
+                        PBAM.Bridge.CastSpell(PBAM.SelectedBot, rec.spellId, "")
+                        statusText:SetText("Sent bridge cast for " .. tostring(RecipeName(rec)) .. ".")
+                    elseif SendChatMessage then
+                        SendChatMessage("cast " .. tostring(rec.spellId), "WHISPER", nil, PBAM.SelectedBot)
+                        statusText:SetText("Sent legacy cast for " .. tostring(RecipeName(rec)) .. ".")
+                    end
                 else
                     PBAM.Bridge.CraftRecipe(PBAM.SelectedBot, rec.skillId or selectedSkillId, rec.spellId, rec.itemId)
                 end
             end)
             r.allBtn:SetText(craftable > 1 and ("All " .. tostring(craftable)) or "All")
-            PBAM.SetButtonEnabled(r.allBtn, craftable > 0 and not (special and special.disableCraftAll), (special and special.disableCraftAll) and "Craft All is disabled for this recipe." or "No crafts are currently available.")
+            PBAM.SetButtonEnabled(r.allBtn, craftable > 0 and not (special and special.disableCraftAll) and targetMode == "NONE", targetMode ~= "NONE" and "Craft All is disabled while targeting a specific item." or ((special and special.disableCraftAll) and "Craft All is disabled for this recipe." or "No crafts are currently available."))
             r.allBtn:SetScript("OnClick", function()
                 craftQueue.active = true
                 craftQueue.remaining = craftable
@@ -398,7 +604,8 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
 
     panel.OnBotSelect = function(botName)
         Clear(profRows)
-        if botName ~= lastBotName then selectedSkillId = nil; selectedSkillName = nil; lastBotName = botName end
+        if botName ~= lastBotName then selectedSkillId = nil; selectedSkillName = nil; selectedTargetItem = nil; lastBotName = botName end
+        if RefreshTargetItemDropdown then RefreshTargetItemDropdown() end
         UpdateButtons(botName)
         if not botName then emptyFs:Show(); header:Hide(); profScroll:Hide(); recipesPanel:Hide(); return end
         emptyFs:Hide(); header:Show(); profScroll:Show(); recipesPanel:Show()

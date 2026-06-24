@@ -9,6 +9,8 @@ local SLOT_NAMES = {
     [1]="Head", [2]="Neck", [3]="Shoulder", [4]="Shirt", [5]="Chest", [6]="Waist", [7]="Legs", [8]="Feet", [9]="Wrist", [10]="Hands",
     [11]="Finger 1", [12]="Finger 2", [13]="Trinket 1", [14]="Trinket 2", [15]="Back", [16]="Main Hand", [17]="Off Hand", [18]="Ranged", [19]="Tabard",
 }
+local SERVER_TO_CLIENT_SLOT = {}
+for serverSlot = 0, 18 do SERVER_TO_CLIENT_SLOT[serverSlot] = serverSlot + 1 end
 local LEFT_SLOTS  = {1,2,3,15,5,4,19,9}
 local RIGHT_SLOTS = {10,6,7,8,11,12,13,14}
 local BOTTOM_SLOTS = {16,17,18}
@@ -18,7 +20,11 @@ local EMPTY_MESSAGE_X_OFFSET = -125
 local EMPTY_MESSAGE_Y_OFFSET = 0
   
 
-local function itemIcon(link)
+local function itemIcon(link, itemId)
+    if itemId and itemId > 0 and GetItemIcon then
+        local icon = GetItemIcon(itemId)
+        if icon then return icon end
+    end
     if link and GetItemIcon then
         local icon = GetItemIcon(link)
         if icon then return icon end
@@ -47,6 +53,9 @@ PBAM.RegisterTab("Equipment", "Equipment", 7, function(panel)
     local slotButtons, outfitRows = {}, {}
 
     PBAM.Bridge.RegisterCallback("OutfitsUpdated", function(botName)
+        if botName == PBAM.SelectedBot and PBAM.CurrentTab == "Equipment" and panel.OnBotSelect then panel.OnBotSelect(botName) end
+    end)
+    PBAM.Bridge.RegisterCallback("InventoryUpdated", function(botName)
         if botName == PBAM.SelectedBot and PBAM.CurrentTab == "Equipment" and panel.OnBotSelect then panel.OnBotSelect(botName) end
     end)
     local inspectFrame = CreateFrame("Frame")
@@ -296,6 +305,7 @@ PBAM.RegisterTab("Equipment", "Equipment", 7, function(panel)
         if model and model.ClearModel then model:ClearModel() end
         if not botName then return end
         PBAM.Bridge.Outfits[string.lower(botName)] = nil
+        if PBAM.Bridge.RequestInventory then PBAM.Bridge.RequestInventory(botName) end
         PBAM.Bridge.RequestOutfits(botName)
         panel.OnBotSelect(botName)
     end
@@ -332,24 +342,36 @@ PBAM.RegisterTab("Equipment", "Equipment", 7, function(panel)
             lastModelUnitKey, lastModelBot = nil, nil
             model:Hide()
         end
+        local key=string.lower(botName)
+        local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
+        if (not inv or not inv.equipmentLocations) and PBAM.Bridge.RequestInventory then PBAM.Bridge.RequestInventory(botName) end
+        local bridgeEquipment = {}
+        for _, item in ipairs((inv and inv.equipmentLocations) or {}) do
+            local clientSlot = SERVER_TO_CLIENT_SLOT[tonumber(item.equipSlot) or -1]
+            if clientSlot then bridgeEquipment[clientSlot] = item end
+        end
+
         local foundLinks = 0
         for slot,b in pairs(slotButtons) do
-            local link = unit and GetInventoryItemLink(unit, slot) or nil
+            local bridgeItem = bridgeEquipment[slot]
+            local link = bridgeItem and bridgeItem.text or (unit and GetInventoryItemLink(unit, slot) or nil)
+            local itemId = bridgeItem and bridgeItem.itemId or nil
             if link then foundLinks = foundLinks + 1 end
             b.link = link
-            b.icon:SetTexture(link and itemIcon(link) or "Interface\\PaperDoll\\UI-PaperDoll-Slot-Bag")
+            b.itemId = itemId
+            b.icon:SetTexture(link and itemIcon(link, itemId) or "Interface\\PaperDoll\\UI-PaperDoll-Slot-Bag")
             b.icon:SetVertexColor(link and 1 or 0.45, link and 1 or 0.45, link and 1 or 0.45, 1)
             b.label:SetText("")
         end
-        if unit and foundLinks > 0 then
-            hint:SetText("")
+        if foundLinks > 0 then
+            hint:SetText(inv and "" or "Equipment from inspect; requesting bridge equipment...")
         elseif unit then
             if NotifyInspect and (not CheckInteractDistance or CheckInteractDistance(unit, 1)) then NotifyInspect(unit) end
             hint:SetText("")
         else
             hint:SetText("")
         end
-        local key=string.lower(botName); local outfits=PBAM.Bridge.Outfits and PBAM.Bridge.Outfits[key]
+        local outfits=PBAM.Bridge.Outfits and PBAM.Bridge.Outfits[key]
         if not outfits then PBAM.Bridge.RequestOutfits(botName) end
         if outfits and outfits.outfits and #outfits.outfits > 0 then
             for i,o in ipairs(outfits.outfits) do

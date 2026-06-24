@@ -26,6 +26,7 @@ Bridge.ProfessionRecipes = {}
 Bridge.Spellbook     = {}
 Bridge.InventoryItemActions = {}
 Bridge.ProfessionCraftActions = {}
+Bridge.NativeActions = {}
 Bridge.Trainer       = {}
 Bridge.Glyphs        = {}
 Bridge.Outfits       = {}
@@ -86,13 +87,13 @@ function Bridge.DebugPrint(...)
     if type(PBAM) == "table" and type(PBAM.DebugPrint) == "function" then
         PBAM.DebugPrint(msg)
     elseif type(DEFAULT_CHAT_FRAME) == "table" then
-        DEFAULT_CHAT_FRAME:AddMessage("|cFF69CCF0" .. msg .. "|r")
+        if PBAM and PBAM.ChatMessage then PBAM.ChatMessage("|cFF69CCF0" .. msg .. "|r") else DEFAULT_CHAT_FRAME:AddMessage("|cFF69CCF0" .. msg .. "|r") end
     end
 end
 
 function Bridge.LogError(msg)
     if DEFAULT_CHAT_FRAME then
-        DEFAULT_CHAT_FRAME:AddMessage("|cFFFF4444[PBAltManager]|r " .. tostring(msg or ""))
+        if PBAM and PBAM.ChatMessage then PBAM.ChatMessage("|cFFFF4444[PBAltManager]|r " .. tostring(msg or ""), true) else DEFAULT_CHAT_FRAME:AddMessage("|cFFFF4444[PBAltManager]|r " .. tostring(msg or "")) end
     end
 end
 
@@ -239,6 +240,71 @@ end
 function Bridge.RunInventoryItemAction(bot, action, itemId, count)
     local t=makeToken("item"); action = string.upper(trim(action or "")); Bridge.InventoryItemActions[t] = { botName = bot, action = action, itemId = tonumber(itemId) or 0, count = tonumber(count) or 0 }; Bridge.Send("RUN", "ITEM_ACTION~" .. urlEncode(bot) .. "~" .. t .. "~" .. action .. "~" .. (itemId or 0) .. "~" .. (count or 0)); return t
 end
+function Bridge.CastSpell(bot, spellId, targetName)
+    local t = makeToken("cast")
+    Bridge.NativeActions[t] = { type = "CAST_SPELL", botName = bot, spellId = tonumber(spellId) or 0, targetName = targetName or "" }
+    Bridge.Send("RUN", "CAST_SPELL~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(spellId) or 0) .. "~" .. urlEncode(targetName or ""))
+    return t
+end
+
+function Bridge.QuestAbandon(bot, questId)
+    local t = makeToken("qdrop")
+    Bridge.NativeActions[t] = { type = "QUEST_ABANDON", botName = bot, questId = tonumber(questId) or 0 }
+    Bridge.Send("RUN", "QUEST_ABANDON~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(questId) or 0))
+    return t
+end
+
+function Bridge.QuestShare(bot, questId, targetName)
+    local t = makeToken("qshare")
+    Bridge.NativeActions[t] = { type = "QUEST_SHARE", botName = bot, questId = tonumber(questId) or 0, targetName = targetName or "" }
+    Bridge.Send("RUN", "QUEST_SHARE~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(questId) or 0) .. "~" .. urlEncode(targetName or ""))
+    return t
+end
+
+function Bridge.ItemEquip(bot, itemId, slotHint, bag, slot)
+    local t = makeToken("equip")
+    local payload = "ITEM_EQUIP~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(itemId) or 0) .. "~" .. urlEncode(slotHint or "AUTO")
+    if bag ~= nil and slot ~= nil then payload = payload .. "~" .. (tonumber(bag) or 0) .. "~" .. (tonumber(slot) or 0) end
+    Bridge.NativeActions[t] = { type = "ITEM_EQUIP", botName = bot, itemId = tonumber(itemId) or 0, slotHint = slotHint or "AUTO", bag = tonumber(bag), slot = tonumber(slot) }
+    Bridge.Send("RUN", payload)
+    return t
+end
+
+function Bridge.ItemTrade(bot, itemId, targetName, count, bag, slot)
+    local t = makeToken("trade")
+    local payload = "ITEM_TRADE~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(itemId) or 0) .. "~" .. urlEncode(targetName or "") .. "~" .. (tonumber(count) or 0)
+    if bag ~= nil and slot ~= nil then payload = payload .. "~" .. (tonumber(bag) or 0) .. "~" .. (tonumber(slot) or 0) end
+    Bridge.NativeActions[t] = { type = "ITEM_TRADE", botName = bot, itemId = tonumber(itemId) or 0, targetName = targetName or "", count = tonumber(count) or 0, bag = tonumber(bag), slot = tonumber(slot) }
+    Bridge.Send("RUN", payload)
+    return t
+end
+
+function Bridge.TalentApply(bot, buildString, dryRun)
+    local t = makeToken("talapply")
+    Bridge.NativeActions[t] = { type = "TALENT_APPLY", botName = bot, buildString = buildString or "", dryRun = dryRun and true or false }
+    Bridge.Send("RUN", "TALENT_APPLY~" .. urlEncode(bot) .. "~" .. t .. "~" .. urlEncode(buildString or "") .. "~" .. (dryRun and "1" or "0"))
+    return t
+end
+
+function Bridge.CraftRecipeTarget(bot, skillId, spellId, targetItemId, targetBag, targetSlot, targetMode)
+    local t = makeToken("crafttarget")
+    Bridge.ProfessionCraftActions[t] = { botName = bot, skillId = tonumber(skillId) or 0, spellId = tonumber(spellId) or 0, itemId = tonumber(targetItemId) or 0, targetBag = tonumber(targetBag) or 0, targetSlot = tonumber(targetSlot) or 0, targetMode = targetMode or "", targeted = true }
+    Bridge.Send("RUN", "CRAFT_RECIPE_TARGET~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(skillId) or 0) .. "~" .. (tonumber(spellId) or 0) .. "~" .. (tonumber(targetItemId) or 0) .. "~" .. (tonumber(targetBag) or 0) .. "~" .. (tonumber(targetSlot) or 0) .. "~" .. urlEncode(targetMode or ""))
+    return t
+end
+
+function Bridge.RequestInventoryBulk()
+    local t = makeToken("invbulk")
+    Bridge.Send("GET", "INVENTORY_BULK~" .. t)
+    return t
+end
+
+function Bridge.RequestBotSkillsBulk()
+    local t = makeToken("skillsbulk")
+    Bridge.Send("GET", "BOT_SKILLS_BULK~" .. t)
+    return t
+end
+
 function Bridge.LearnTrainerSpell(bot, trainerEntry, spellId)
     local t=makeToken("learn"); Bridge.Send("RUN", "TRAINER_LEARN~" .. urlEncode(bot) .. "~" .. t .. "~" .. (trainerEntry or 0) .. "~" .. (spellId or 0)); return t
 end
@@ -282,7 +348,7 @@ function Bridge.OnAddonMessage(prefix, message, channel, sender)
         Bridge.ApplyStatsPayload(payload)
     elseif opcode == "PVP_STATS" then
         Bridge.ApplyPvpStatsPayload(payload)
-    elseif opcode == "INV_BEGIN" or opcode == "INV_SUMMARY" or opcode == "INV_ITEM" or opcode == "INV_END" then
+    elseif opcode == "INV_BEGIN" or opcode == "INV_SUMMARY" or opcode == "INV_ITEM" or opcode == "INV_ITEM_LOC" or opcode == "INV_EQUIP_LOC" or opcode == "INV_BAG" or opcode == "INV_END" then
         Bridge.DebugPrint("[ROUTER] Routing INV_* message: opcode=" .. opcode .. " payload=" .. tostring(payload))
         Bridge.ApplyInventoryPayload(opcode .. "~" .. payload)
     elseif opcode == "INVENTORY" then
@@ -299,6 +365,10 @@ function Bridge.OnAddonMessage(prefix, message, channel, sender)
         Bridge.ApplyProfessionPayload(opcode .. "~" .. payload)
     elseif opcode == "BOT_SKILLS" or opcode == "BOT_SKILLS_BEGIN" or opcode == "BOT_SKILLS_ITEM" or opcode == "BOT_SKILLS_END" then
         Bridge.ApplyBotSkillsPayload(opcode .. "~" .. payload)
+    elseif opcode == "INV_BULK_BEGIN" or opcode == "INV_BULK_ITEM" or opcode == "INV_BULK_END" then
+        Bridge.ApplyInventoryBulkPayload(opcode .. "~" .. payload)
+    elseif opcode == "BOT_SKILLS_BULK_BEGIN" or opcode == "BOT_SKILLS_BULK_ITEM" or opcode == "BOT_SKILLS_BULK_END" then
+        Bridge.ApplyBotSkillsBulkPayload(opcode .. "~" .. payload)
     elseif opcode == "BOT_REPUTATIONS" or opcode == "BOT_REPUTATIONS_BEGIN" or opcode == "BOT_REPUTATION_ITEM" or opcode == "BOT_REPUTATION" or opcode == "BOT_REPUTATIONS_END" then
         Bridge.ApplyBotReputationsPayload(opcode .. "~" .. payload)
     elseif opcode == "BOT_EMBLEMS" then
@@ -315,10 +385,12 @@ function Bridge.OnAddonMessage(prefix, message, channel, sender)
         Bridge.ApplyQuestsPayload(opcode .. "~" .. payload)
     elseif opcode == "GAMEOBJECTS" then
         Bridge.ApplyGameObjectsPayload(payload)
-    elseif opcode == "PROFESSION_RECIPE_CRAFT" or opcode == "CRAFT_RECIPE" then
-        Bridge.ApplyCraftRecipeResult(payload)
+    elseif opcode == "PROFESSION_RECIPE_CRAFT" or opcode == "CRAFT_RECIPE" or opcode == "CRAFT_RECIPE_TARGET" then
+        Bridge.ApplyCraftRecipeResult(payload, opcode)
     elseif opcode == "INVENTORY_ITEM_ACTION" then
         Bridge.ApplyInventoryItemActionPayload(payload)
+    elseif opcode == "CAST_SPELL" or opcode == "QUEST_ABANDON" or opcode == "QUEST_SHARE" or opcode == "ITEM_EQUIP" or opcode == "ITEM_TRADE" or opcode == "TALENT_APPLY" then
+        Bridge.ApplyNativeActionResult(opcode, payload)
     elseif opcode == "TRAINER_LEARN" then
         Bridge.ApplyTrainerLearnResult(payload)
     end
@@ -536,7 +608,7 @@ function Bridge.ApplyInventoryPayload(payload)
     local key = string.lower(name)
 
     if opcode == "INV_BEGIN" then
-        Bridge.Inventory[key] = { name = name, token = token, items = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
+        Bridge.Inventory[key] = { name = name, token = token, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
         return
     end
 
@@ -554,6 +626,55 @@ function Bridge.ApplyInventoryPayload(payload)
         inv.goldCopper = (tonumber(gold) or 0) * 10000 + (tonumber(silver) or 0) * 100 + (tonumber(copper) or 0)
         inv.bagUsed = tonumber(bagUsed) or 0
         inv.bagTotal = tonumber(bagTotal) or 0
+        Bridge.Inventory[key] = inv
+    elseif opcode == "INV_BAG" then
+        local bagIndex, rest2 = splitOnce(rest, "~")
+        local bagItemId, rest3 = splitOnce(rest2, "~")
+        local bagLink, rest4 = splitOnce(rest3, "~")
+        local numSlots, bagType = splitOnce(rest4, "~")
+        inv.bags = inv.bags or {}
+        local idx = tonumber(bagIndex) or 0
+        inv.bags[idx] = {
+            bagIndex = idx,
+            bagItemId = tonumber(bagItemId) or 0,
+            bagLink = trim(urlDecode(bagLink)),
+            numSlots = tonumber(numSlots) or 0,
+            bagType = trim(urlDecode(bagType)),
+        }
+        Bridge.Inventory[key] = inv
+    elseif opcode == "INV_ITEM_LOC" then
+        local bag, rest2 = splitOnce(rest, "~")
+        local slot, rest3 = splitOnce(rest2, "~")
+        local itemId, rest4 = splitOnce(rest3, "~")
+        local count, rest5 = splitOnce(rest4, "~")
+        local itemText, soulbound = splitOnce(rest5, "~")
+        inv.itemLocations = inv.itemLocations or {}
+        local row = {
+            bag = tonumber(bag) or 0,
+            slot = tonumber(slot) or 0,
+            itemId = tonumber(itemId) or 0,
+            count = tonumber(count) or 0,
+            text = trim(urlDecode(itemText)),
+            soulbound = tostring(soulbound or "0") == "1",
+        }
+        table.insert(inv.itemLocations, row)
+        Bridge.Inventory[key] = inv
+    elseif opcode == "INV_EQUIP_LOC" then
+        local equipSlot, rest2 = splitOnce(rest, "~")
+        local itemId, rest3 = splitOnce(rest2, "~")
+        local count, rest4 = splitOnce(rest3, "~")
+        local itemText, soulbound = splitOnce(rest4, "~")
+        inv.equipmentLocations = inv.equipmentLocations or {}
+        local row = {
+            equipSlot = tonumber(equipSlot) or 0,
+            bag = 0,
+            slot = tonumber(equipSlot) or 0,
+            itemId = tonumber(itemId) or 0,
+            count = tonumber(count) or 0,
+            text = trim(urlDecode(itemText)),
+            soulbound = tostring(soulbound or "0") == "1",
+        }
+        table.insert(inv.equipmentLocations, row)
         Bridge.Inventory[key] = inv
     elseif opcode == "INV_ITEM" then
         local itemText = trim(urlDecode(rest))
@@ -1172,26 +1293,46 @@ function Bridge.ApplyGameObjectsPayload(payload)
     end
 end
 
-function Bridge.ApplyCraftRecipeResult(payload)
-    -- PROFESSION_RECIPE_CRAFT~BotName~Token~SkillId~SpellId~ItemId~OK|ERR~Reason
+function Bridge.ApplyCraftRecipeResult(payload, opcode)
     local name, rest = splitOnce(payload or "", "~")
     local token, rest2 = splitOnce(rest or "", "~")
-    local skillId, rest3 = splitOnce(rest2 or "", "~")
-    local spellId, rest4 = splitOnce(rest3 or "", "~")
-    local itemId, rest5 = splitOnce(rest4 or "", "~")
-    local status, reason = splitOnce(rest5 or "", "~")
 
     token = trim(token)
     local command = Bridge.ProfessionCraftActions[token] or {}
-    local result = {
-        botName = trim(urlDecode(name)) ~= "" and trim(urlDecode(name)) or command.botName,
-        token = token,
-        skillId = tonumber(skillId) or command.skillId or 0,
-        spellId = tonumber(spellId) or command.spellId or 0,
-        itemId = tonumber(itemId) or command.itemId or 0,
-        result = trim(status),
-        reason = trim(urlDecode(reason)),
-    }
+    local result
+
+    if opcode == "CRAFT_RECIPE_TARGET" then
+        local status, rest3 = splitOnce(rest2 or "", "~")
+        local reason, rawCode = splitOnce(rest3 or "", "~")
+        result = {
+            botName = trim(urlDecode(name)) ~= "" and trim(urlDecode(name)) or command.botName,
+            token = token,
+            skillId = command.skillId or 0,
+            spellId = command.spellId or 0,
+            itemId = command.itemId or 0,
+            targetBag = command.targetBag,
+            targetSlot = command.targetSlot,
+            targeted = true,
+            result = trim(status),
+            reason = trim(urlDecode(reason)),
+            rawCode = tonumber(rawCode),
+        }
+    else
+        -- PROFESSION_RECIPE_CRAFT~BotName~Token~SkillId~SpellId~ItemId~OK|ERR~Reason
+        local skillId, rest3 = splitOnce(rest2 or "", "~")
+        local spellId, rest4 = splitOnce(rest3 or "", "~")
+        local itemId, rest5 = splitOnce(rest4 or "", "~")
+        local status, reason = splitOnce(rest5 or "", "~")
+        result = {
+            botName = trim(urlDecode(name)) ~= "" and trim(urlDecode(name)) or command.botName,
+            token = token,
+            skillId = tonumber(skillId) or command.skillId or 0,
+            spellId = tonumber(spellId) or command.spellId or 0,
+            itemId = tonumber(itemId) or command.itemId or 0,
+            result = trim(status),
+            reason = trim(urlDecode(reason)),
+        }
+    end
 
     Bridge.ProfessionCraftActions[token] = nil
     Bridge.FireCallback("ProfessionCraftResult", result)
@@ -1222,6 +1363,139 @@ function Bridge.ApplyInventoryItemActionPayload(payload)
 
     Bridge.InventoryItemActions[token] = nil
     Bridge.FireCallback("InventoryItemActionResult", result)
+end
+
+function Bridge.ApplyNativeActionResult(opcode, payload)
+    local name, rest = splitOnce(payload or "", "~")
+    local token, rest2 = splitOnce(rest or "", "~")
+    local status, rest3 = splitOnce(rest2 or "", "~")
+    local reason, extra = splitOnce(rest3 or "", "~")
+
+    token = trim(token)
+    local command = Bridge.NativeActions[token] or {}
+    local result = {
+        type = opcode,
+        botName = trim(urlDecode(name)) ~= "" and trim(urlDecode(name)) or command.botName,
+        token = token,
+        result = trim(status),
+        reason = trim(urlDecode(reason)),
+        extra = trim(urlDecode(extra)),
+        summary = trim(urlDecode(extra)),
+        rawCode = tonumber(extra),
+    }
+
+    for k, v in pairs(command) do
+        if result[k] == nil then result[k] = v end
+    end
+
+    if opcode == "ITEM_TRADE" then result.moved = tonumber(extra) or 0 end
+    if opcode == "TALENT_APPLY" then result.summary = trim(urlDecode(extra)) end
+
+    Bridge.NativeActions[token] = nil
+    Bridge.FireCallback("NativeActionResult", result)
+    Bridge.FireCallback(opcode .. "Result", result)
+end
+
+function Bridge.ApplyInventoryBulkPayload(payload)
+    local opcode, rest = splitOnce(payload or "", "~")
+    if opcode == "INV_BULK_BEGIN" then
+        Bridge.InventoryBulk = { token = trim(rest or ""), items = {}, loading = true }
+        return
+    end
+
+    if opcode == "INV_BULK_ITEM" then
+        local name, rest2 = splitOnce(rest or "", "~")
+        local token, rest3 = splitOnce(rest2 or "", "~")
+        local gold, rest4 = splitOnce(rest3 or "", "~")
+        local silver, rest5 = splitOnce(rest4 or "", "~")
+        local copper, rest6 = splitOnce(rest5 or "", "~")
+        local bagUsed, bagTotal = splitOnce(rest6 or "", "~")
+        local botName = trim(urlDecode(name))
+        if botName ~= "" then
+            local entry = {
+                name = botName,
+                goldCopper = (tonumber(gold) or 0) * 10000 + (tonumber(silver) or 0) * 100 + (tonumber(copper) or 0),
+                bagUsed = tonumber(bagUsed) or 0,
+                bagTotal = tonumber(bagTotal) or 0,
+            }
+            Bridge.InventoryBulk = Bridge.InventoryBulk or { token = trim(token), items = {}, loading = true }
+            Bridge.InventoryBulk.items[string.lower(botName)] = entry
+            Bridge.Inventory[string.lower(botName)] = Bridge.Inventory[string.lower(botName)] or { name = botName, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {} }
+            Bridge.Inventory[string.lower(botName)].bagUsed = entry.bagUsed
+            Bridge.Inventory[string.lower(botName)].bagTotal = entry.bagTotal
+            Bridge.Inventory[string.lower(botName)].goldCopper = entry.goldCopper
+            Bridge.Inventory[string.lower(botName)].loading = false
+            Bridge.Stats[string.lower(botName)] = Bridge.Stats[string.lower(botName)] or { name = botName }
+            Bridge.Stats[string.lower(botName)].bagUsed = entry.bagUsed
+            Bridge.Stats[string.lower(botName)].bagTotal = entry.bagTotal
+            Bridge.Stats[string.lower(botName)].goldCopper = entry.goldCopper
+        end
+        return
+    end
+
+    if opcode == "INV_BULK_END" then
+        if Bridge.InventoryBulk then Bridge.InventoryBulk.loading = false end
+        Bridge.FireCallback("InventoryBulkUpdated", Bridge.InventoryBulk)
+    end
+end
+
+function Bridge.ApplyBotSkillsBulkPayload(payload)
+    local opcode, rest = splitOnce(payload or "", "~")
+    if opcode == "BOT_SKILLS_BULK_BEGIN" then
+        Bridge.BotSkillsBulk = { token = trim(rest or ""), items = {}, loading = true }
+        return
+    end
+
+    if opcode == "BOT_SKILLS_BULK_ITEM" then
+        local name, rest2 = splitOnce(rest or "", "~")
+        local token, rest3 = splitOnce(rest2 or "", "~")
+        local skillId, rest4 = splitOnce(rest3 or "", "~")
+        local category, rest5 = splitOnce(rest4 or "", "~")
+        local keyName, rest6 = splitOnce(rest5 or "", "~")
+        local displayName, rest7 = splitOnce(rest6 or "", "~")
+        local value, maxValue = splitOnce(rest7 or "", "~")
+        local botName = trim(urlDecode(name))
+        if botName ~= "" then
+            local botKey = string.lower(botName)
+            Bridge.BotSkillsBulk = Bridge.BotSkillsBulk or { token = trim(token), items = {}, loading = true }
+            Bridge.BotSkillsBulk.items[botKey] = Bridge.BotSkillsBulk.items[botKey] or { name = botName, skills = {} }
+            local skillEntry = {
+                skillId = tonumber(skillId) or 0,
+                category = trim(urlDecode(category)),
+                key = trim(urlDecode(keyName)),
+                name = trim(urlDecode(displayName)),
+                value = tonumber(value) or 0,
+                maxValue = tonumber(maxValue) or 0,
+            }
+            table.insert(Bridge.BotSkillsBulk.items[botKey].skills, skillEntry)
+
+            local skills = Bridge.Professions[botKey] or { name = botName, skills = {}, primary = {}, secondary = {}, other = {} }
+            local internalKey = string.lower(tostring(skillEntry.key or ""))
+            local displayNameLower = string.lower(tostring(skillEntry.name or ""))
+            local entry = {
+                category = skillEntry.category, type = skillEntry.category,
+                id = skillEntry.skillId, key = internalKey,
+                name = internalKey, displayName = skillEntry.name ~= "" and skillEntry.name or internalKey,
+                value = skillEntry.value, max = skillEntry.maxValue,
+            }
+            skills.skills[entry.id ~= 0 and entry.id or entry.displayName] = entry
+            local secondary = { cooking=true, fishing=true, firstaid=true, ["first aid"]=true }
+            if string.lower(entry.category or "") == "profession" then
+                if secondary[internalKey] or secondary[displayNameLower] then table.insert(skills.secondary, entry) else table.insert(skills.primary, entry) end
+            elseif string.lower(entry.category or "") == "secondary" then
+                table.insert(skills.secondary, entry)
+            else
+                table.insert(skills.other, entry)
+            end
+            Bridge.Professions[botKey] = skills
+        end
+        return
+    end
+
+    if opcode == "BOT_SKILLS_BULK_END" then
+        if Bridge.BotSkillsBulk then Bridge.BotSkillsBulk.loading = false end
+        Bridge.FireCallback("BotSkillsBulkUpdated", Bridge.BotSkillsBulk)
+    end
 end
 
 function Bridge.ApplyTrainerLearnResult(payload)

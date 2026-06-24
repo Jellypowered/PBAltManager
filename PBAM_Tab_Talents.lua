@@ -96,6 +96,8 @@ end
 
 local function buildTalentApplyString(plan)
     if not plan then return nil end
+    -- Playerbot talent link format: concatenated rank digits per tree (e.g., "541230..." for 27 talents)
+    -- Each digit is 0-5 representing the rank in each talent, concatenated together.
     local trees = {}
     for tree=1,3 do
         local ranks = {}
@@ -105,18 +107,14 @@ local function buildTalentApplyString(plan)
     return table.concat(trees, "-")
 end
 
--- Legacy MVP talent application.
--- TODO bridge-talents: when the server adds something like
---   RUN~TALENT_APPLY~<bot>~<token>~<buildString>~<dryRunFlag>
--- replace this helper with PBAM.Bridge.ApplyTalentBuild(...), and keep the UI flow below unchanged.
+-- Named premade specs still use the proven playerbot whisper flow.
+-- Custom edited builds use RUN~TALENT_APPLY with the full per-talent rank string.
 local function sendTalentApplyWhisper(botName, spec)
     if not botName or not spec then return false end
     local specName = tostring(spec.name or "")
 
-    -- IMPORTANT: the current bridge "build" field is only a point summary such as "54-12-5",
-    -- not the full PBM/playerbot talent-rank string needed by "talents apply". Sending that
-    -- summary to "talents apply" only partially applies talents. Until the bridge exposes the
-    -- real build string (or RUN~TALENT_APPLY), use the named premade spec command instead.
+    -- Premade list rows expose summary strings such as "54-12-5", not the full per-talent
+    -- rank link. Apply premades by name; only edited custom plans send the full rank link.
     if specName ~= "" then
         -- Match PBM/MultiBot behavior: stop casts, ensure primary talent group, then apply the
         -- named premade after a short delay. Sending only "talents spec <name>" can leave the
@@ -641,7 +639,15 @@ PBAM.RegisterTab("Talents", "Talents", 2, function(panel)
     end
 
     function panel:ResetTalents()
-        setTextSafe(status, "Reset talents is not supported by current playerbot commands; bridge/server endpoint needed.")
+        local botName = PBAM.SelectedBot
+        if not botName then setTextSafe(status, "Select a bot first."); return end
+        if PBAM.Bridge and PBAM.Bridge.TalentApply then
+            PBAM.Bridge.TalentApply(botName, "0-0-0", false)
+            setTextSafe(status, "Talent reset request sent via bridge.")
+            refreshAfterTalentApply(botName)
+            return
+        end
+        setTextSafe(status, "Reset talents requires bridge TALENT_APPLY endpoint.")
     end
 
     function panel:ApplySelectedTalent(fromConfirmation)
@@ -664,23 +670,24 @@ PBAM.RegisterTab("Talents", "Talents", 2, function(panel)
             return
         end
 
-        -- Legacy fallback by design for now. The surrounding selection/confirmation flow is kept
-        -- separate so a future RUN~TALENT_APPLY bridge endpoint can replace only this execution path.
-        -- TODO bridge-talents: swap these legacy whisper calls to PBAM.Bridge.ApplyTalentBuild(...)
-        -- when a native RUN~TALENT_APPLY endpoint exists.
         if self.TalentPlanDirty then
             local link = buildTalentApplyString(self.TalentPlan)
             if not link or link == "--" then
                 setTextSafe(status, "Could not apply: custom talent plan is empty.")
                 return
             end
-            SendChatMessage("stopcasting", "WHISPER", nil, botName)
-            SendChatMessage("talents switch 1", "WHISPER", nil, botName)
-            after(0.45, function() SendChatMessage("talents apply " .. link, "WHISPER", nil, botName) end)
-            setTextSafe(status, "Applied custom rank link via legacy whisper.")
-            self.TalentPlanDirty = false
-            refreshAfterTalentApply(botName)
-            after(2.0, function() if panel.RefreshTalents then panel:RefreshTalents() end end)
+            if PBAM.Bridge and PBAM.Bridge.TalentApply then
+                PBAM.Bridge.TalentApply(botName, link, false)
+                setTextSafe(status, "Sent custom talent link via bridge: " .. string.sub(link, 1, 72) .. (string.len(link) > 72 and "..." or ""))
+            else
+                SendChatMessage("stopcasting", "WHISPER", nil, botName)
+                SendChatMessage("talents switch 1", "WHISPER", nil, botName)
+                after(0.45, function() SendChatMessage("talents apply " .. link, "WHISPER", nil, botName) end)
+                setTextSafe(status, "Applied custom rank link via legacy whisper.")
+                self.TalentPlanDirty = false
+                refreshAfterTalentApply(botName)
+                after(2.0, function() if panel.RefreshTalents then panel:RefreshTalents() end end)
+            end
         elseif sendTalentApplyWhisper(botName, spec) then
             setTextSafe(status, "Applied named premade via legacy whisper: " .. tostring(spec.name or "selected build"))
             refreshAfterTalentApply(botName)
@@ -731,6 +738,15 @@ PBAM.RegisterTab("Talents", "Talents", 2, function(panel)
         PBAM.Bridge.RegisterCallback("BotDetailUpdated", function(detail)
             if detail and detail.name == PBAM.SelectedBot and PBAM.CurrentTab == "Talents" and panel.OnBotSelect then
                 panel.OnBotSelect(detail.name)
+            end
+        end)
+        PBAM.Bridge.RegisterCallback("TALENT_APPLYResult", function(result)
+            if not result or result.botName ~= PBAM.SelectedBot or PBAM.CurrentTab ~= "Talents" then return end
+            setTextSafe(status, "Talent apply " .. (result.result == "OK" and "ok" or ("failed: " .. tostring(result.reason or "unknown"))) .. (result.summary and result.summary ~= "" and (" (" .. result.summary .. ")") or ""))
+            if result.result == "OK" then
+                panel.TalentPlanDirty = false
+                refreshAfterTalentApply(result.botName)
+                after(2.0, function() if panel.RefreshTalents then panel:RefreshTalents() end end)
             end
         end)
         panel._talentCallbacksRegistered = true
