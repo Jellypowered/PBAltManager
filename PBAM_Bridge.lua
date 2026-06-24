@@ -1403,6 +1403,55 @@ function Bridge.ApplyInventoryBulkPayload(payload)
         return
     end
 
+    if opcode == "INV_BAG" then
+        local name, rest2 = splitOnce(rest or "", "~")
+        local token, rest3 = splitOnce(rest2 or "", "~")
+        local bagIndex, rest4 = splitOnce(rest3 or "", "~")
+        local bagItemId, rest5 = splitOnce(rest4 or "", "~")
+        local bagLink, rest6 = splitOnce(rest5 or "", "~")
+        local numSlots, bagType = splitOnce(rest6 or "", "~")
+        local botName = trim(urlDecode(name))
+        if botName ~= "" then
+            local key = string.lower(botName)
+            Bridge.Inventory[key] = Bridge.Inventory[key] or { name = botName, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {} }
+            local idx = tonumber(bagIndex) or 0
+            Bridge.Inventory[key].bags = Bridge.Inventory[key].bags or {}
+            Bridge.Inventory[key].bags[idx] = {
+                bagIndex = idx,
+                bagItemId = tonumber(bagItemId) or 0,
+                bagLink = trim(urlDecode(bagLink)),
+                numSlots = tonumber(numSlots) or 0,
+                bagType = trim(urlDecode(bagType)),
+            }
+        end
+        return
+    end
+
+    if opcode == "INV_ITEM_LOC" then
+        local name, rest2 = splitOnce(rest or "", "~")
+        local token, rest3 = splitOnce(rest2 or "", "~")
+        local bag, rest4 = splitOnce(rest3 or "", "~")
+        local slot, rest5 = splitOnce(rest4 or "", "~")
+        local itemId, rest6 = splitOnce(rest5 or "", "~")
+        local count, rest7 = splitOnce(rest6 or "", "~")
+        local itemText, soulbound = splitOnce(rest7 or "", "~")
+        local botName = trim(urlDecode(name))
+        if botName ~= "" then
+            local key = string.lower(botName)
+            Bridge.Inventory[key] = Bridge.Inventory[key] or { name = botName, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {} }
+            Bridge.Inventory[key].itemLocations = Bridge.Inventory[key].itemLocations or {}
+            table.insert(Bridge.Inventory[key].itemLocations, {
+                bag = tonumber(bag) or 0,
+                slot = tonumber(slot) or 0,
+                itemId = tonumber(itemId) or 0,
+                count = tonumber(count) or 0,
+                text = trim(urlDecode(itemText)),
+                soulbound = tostring(soulbound or "0") == "1",
+            })
+        end
+        return
+    end
+
     if opcode == "INV_BULK_ITEM" then
         local name, rest2 = splitOnce(rest or "", "~")
         local token, rest3 = splitOnce(rest2 or "", "~")
@@ -1420,15 +1469,15 @@ function Bridge.ApplyInventoryBulkPayload(payload)
             }
             Bridge.InventoryBulk = Bridge.InventoryBulk or { token = trim(token), items = {}, loading = true }
             Bridge.InventoryBulk.items[string.lower(botName)] = entry
-            Bridge.Inventory[string.lower(botName)] = Bridge.Inventory[string.lower(botName)] or { name = botName, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {} }
-            Bridge.Inventory[string.lower(botName)].bagUsed = entry.bagUsed
-            Bridge.Inventory[string.lower(botName)].bagTotal = entry.bagTotal
-            Bridge.Inventory[string.lower(botName)].goldCopper = entry.goldCopper
-            Bridge.Inventory[string.lower(botName)].loading = false
-            Bridge.Stats[string.lower(botName)] = Bridge.Stats[string.lower(botName)] or { name = botName }
-            Bridge.Stats[string.lower(botName)].bagUsed = entry.bagUsed
-            Bridge.Stats[string.lower(botName)].bagTotal = entry.bagTotal
-            Bridge.Stats[string.lower(botName)].goldCopper = entry.goldCopper
+            local key = string.lower(botName)
+            Bridge.Inventory[key] = Bridge.Inventory[key] or { name = botName, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {} }
+            Bridge.Inventory[key].bagUsed = entry.bagUsed
+            Bridge.Inventory[key].bagTotal = entry.bagTotal
+            Bridge.Inventory[key].goldCopper = entry.goldCopper
+            Bridge.Stats[key] = Bridge.Stats[key] or { name = botName }
+            Bridge.Stats[key].bagUsed = entry.bagUsed
+            Bridge.Stats[key].bagTotal = entry.bagTotal
+            Bridge.Stats[key].goldCopper = entry.goldCopper
         end
         return
     end
