@@ -1,6 +1,15 @@
 # PBAltManager
-
-PBAltManager is a dark-and-gold World of Warcraft WotLK (3.3.5a) addon for managing playerbot alts through `mod-multibot-bridge`.
+### There is a more advanced version, but it requires my Extended fork of mod-multibot-bridge 
+1. To use it: Switch to the `Extended` branch this addon, and be sure to get my fork of the `mod-multibot-bridge`. 
+2. cd azerothcore-wotlk/modules (or whatever yours is)
+3. If you are using Wishmaster's repo, either remove mod-multibot-bridge folder (rm -rf mod-multibot-bridge) or add a remote origin (not covered here) 
+4. git clone https://github.com/Jellypowered/mod-multibot-bridge.git
+5. cd mod-multibot-bridge
+6. git switch Extended
+7. rebuild your server.
+8. profit!
+   
+# PBAltManager is a dark-and-gold World of Warcraft WotLK (3.3.5a) addon for managing playerbot alts through `mod-multibot-bridge`.
 
 It brings the most useful day-to-day bot management tools into one window with a compact roster, dropdown tab navigation, and bridge-first data loading.
 
