@@ -6,6 +6,8 @@
 PBAM = PBAM or {}
 PBAM.Version = "0.1.0"
 
+local DEFAULT_REFRESH_THROTTLE_MS = 500
+
 -- Initialize config tables (SavedVariables)
 PBAMConfig = PBAMConfig or {}
 PBAMConfig.Minimap = PBAMConfig.Minimap or { hide = false, angle = 0 }
@@ -17,7 +19,7 @@ if PBAMConfig.DebugMode == nil then PBAMConfig.DebugMode = false end
 if PBAMConfig.SuppressLegacySending == nil then PBAMConfig.SuppressLegacySending = false end
 if PBAMConfig.ConfirmDestructive == nil then PBAMConfig.ConfirmDestructive = true end
 if PBAMConfig.ShareQuestsToGroup == nil then PBAMConfig.ShareQuestsToGroup = true end
-PBAMConfig.RefreshThrottleMs = tonumber(PBAMConfig.RefreshThrottleMs) or 500
+PBAMConfig.RefreshThrottleMs = tonumber(PBAMConfig.RefreshThrottleMs) or DEFAULT_REFRESH_THROTTLE_MS
 PBAMConfig.RefreshThrottleMs = math.max(100, math.min(5000, PBAMConfig.RefreshThrottleMs))
 
 PBAM.MainWindow = nil
@@ -211,7 +213,7 @@ function PBAM.RegisterOptionsPanel()
         local value = tonumber(throttleEdit:GetText()) or DEFAULT_REFRESH_THROTTLE_MS
         value = math.max(100, math.min(5000, value))
         PBAMConfig.RefreshThrottleMs = value
-        throttleEdit:SetText(tostring(value))
+        throttleEdit:SetText(tostring(PBAM.GetRefreshThrottleMs()))
         throttleEdit:ClearFocus()
     end
     throttleEdit:SetScript("OnEnterPressed", SaveThrottle)
@@ -257,7 +259,6 @@ local ROLE_BY_SPEC = {
 local ROLE_SORT_ORDER = { Tank=1, Healer=2, DPS=3, ["Tank/DPS"]=3, Unknown=4, ["N/A"]=4 }
 local ROSTER_SORT_REQUEST_TTL = 3.0
 local ROSTER_SORT_MAX_INFLIGHT = 4
-local DEFAULT_REFRESH_THROTTLE_MS = 500  -- Minimum ms between same refreshes
 function PBAM.GetRefreshThrottleMs()
     local value = tonumber(PBAMConfig and PBAMConfig.RefreshThrottleMs) or DEFAULT_REFRESH_THROTTLE_MS
     return math.max(100, math.min(5000, value))

@@ -8,7 +8,7 @@ PBAM.Bridge = PBAM.Bridge or {}
 local Bridge = PBAM.Bridge
 
 -- Protocol (from MultiBot-Chatless)
-Bridge.PREFIX   = "MBOT"
+Bridge.PREFIX   = "PBAM"
 Bridge.VERSION  = "1"
 
 -- State
@@ -270,6 +270,13 @@ function Bridge.ItemEquip(bot, itemId, slotHint, bag, slot)
     return t
 end
 
+function Bridge.BagMove(bot, sourceBagIndex, targetBagIndex)
+    local t = makeToken("bagmove")
+    Bridge.NativeActions[t] = { type = "BAG_MOVE", botName = bot, sourceBagIndex = tonumber(sourceBagIndex) or 0, targetBagIndex = tonumber(targetBagIndex) or 0 }
+    Bridge.Send("RUN", "BAG_MOVE~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(sourceBagIndex) or 0) .. "~" .. (tonumber(targetBagIndex) or 0))
+    return t
+end
+
 function Bridge.ItemTrade(bot, itemId, targetName, count, bag, slot)
     local t = makeToken("trade")
     local payload = "ITEM_TRADE~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(itemId) or 0) .. "~" .. urlEncode(targetName or "") .. "~" .. (tonumber(count) or 0)
@@ -389,7 +396,7 @@ function Bridge.OnAddonMessage(prefix, message, channel, sender)
         Bridge.ApplyCraftRecipeResult(payload, opcode)
     elseif opcode == "INVENTORY_ITEM_ACTION" then
         Bridge.ApplyInventoryItemActionPayload(payload)
-    elseif opcode == "CAST_SPELL" or opcode == "QUEST_ABANDON" or opcode == "QUEST_SHARE" or opcode == "ITEM_EQUIP" or opcode == "ITEM_TRADE" or opcode == "TALENT_APPLY" then
+    elseif opcode == "CAST_SPELL" or opcode == "QUEST_ABANDON" or opcode == "QUEST_SHARE" or opcode == "ITEM_EQUIP" or opcode == "BAG_MOVE" or opcode == "ITEM_TRADE" or opcode == "TALENT_APPLY" then
         Bridge.ApplyNativeActionResult(opcode, payload)
     elseif opcode == "TRAINER_LEARN" then
         Bridge.ApplyTrainerLearnResult(payload)

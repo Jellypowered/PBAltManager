@@ -162,14 +162,17 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     local bagSlots = {}
     local selectedBagSlot = nil
     local hoverBagSlot = nil
+    local draggingBagItem = nil
+    local draggingEquippedBag = nil
     local bagsFrame
+    local bagDragCursorFrame
 
     -- Forward declarations for callback helpers/UI objects. Lua local scope starts
     -- at the declaration, so callbacks defined before these helpers need this.
     local titleFs, slotsFs, goldFs, content, statusFs
     local ClearRows, HideTargetMenu, Row, UpdateRowHighlights
     local RenderMerchantRows, UpdateBagSlots, GetBagName
-    local RefreshMerchantView
+    local RefreshMerchantView, RequestInventoryRefresh, RequestEquipmentRefresh
 
     local function NormalizeBagIndex(bagValue)
         -- Bridge item locations may use raw AzerothCore container positions:
@@ -314,6 +317,149 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         return inv and inv.bags and inv.bags[bagIndex] or nil
     end
 
+    local function BagSlotHintFromBagIndex(bagIndex)
+        bagIndex = tonumber(bagIndex)
+        if bagIndex and bagIndex >= 1 and bagIndex <= 4 then return "BAG_" .. tostring(bagIndex) end
+        return "BAG"
+    end
+
+    local function EnsureBagDragCursor()
+        if bagDragCursorFrame then return bagDragCursorFrame end
+        local f = CreateFrame("Frame", nil, UIParent)
+        f:SetSize(30, 30)
+        f:SetFrameStrata("TOOLTIP")
+        f:EnableMouse(false)
+        f.icon = f:CreateTexture(nil, "OVERLAY")
+        f.icon:SetAllPoints()
+        f.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+        f.border = f:CreateTexture(nil, "ARTWORK")
+        f.border:SetAllPoints()
+        f.border:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+        f.border:SetVertexColor(1, 1, 1, 0.9)
+        f:Hide()
+        f:SetScript("OnUpdate", function(self)
+            if not self:IsShown() then return end
+            local x, y = GetCursorPosition()
+            local scale = UIParent:GetEffectiveScale()
+            x, y = x / scale, y / scale
+            self:ClearAllPoints()
+            self:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x + 10, y - 10)
+        end)
+        bagDragCursorFrame = f
+        return f
+    end
+
+    local function ShowBagDragCursor(item)
+        local f = EnsureBagDragCursor()
+        local texture = ItemIcon(item)
+        if f.icon then f.icon:SetTexture(texture or "Interface\\Icons\\INV_Misc_QuestionMark") end
+        f:Show()
+    end
+
+    local function ShowBagDragCursorByItemId(itemId)
+        local f = EnsureBagDragCursor()
+        local texture = (itemId and itemId > 0 and GetItemIcon and GetItemIcon(itemId)) or "Interface\\Icons\\INV_Misc_QuestionMark"
+        if f.icon then f.icon:SetTexture(texture or "Interface\\Icons\\INV_Misc_QuestionMark") end
+        f:Show()
+    end
+
+    local function HideBagDragCursor()
+        if bagDragCursorFrame then bagDragCursorFrame:Hide() end
+    end
+
+    local function ClearBagDrag(clearStatus)
+        draggingBagItem = nil
+        draggingEquippedBag = nil
+        HideBagDragCursor()
+        if clearStatus then
+            LogStatus(statusFs, "Bag drag canceled.", 0.75, 0.75, 0.75)
+        end
+        UpdateBagSlots()
+        if UpdateRowHighlights then UpdateRowHighlights() end
+    end
+
+    local function StartBagDrag(item)
+        if not equipMode or showingBank or not PBAM.SelectedBot or not item or not IsEquippableBagItem(item) then return false end
+        local itemId = ItemId(item)
+        if itemId <= 0 then return false end
+        draggingBagItem = {
+            item = item,
+            itemId = itemId,
+            name = ItemName(item),
+            bag = tonumber(item.bag),
+            slot = tonumber(item.slot),
+        }
+        ShowBagDragCursor(item)
+        LogStatus(statusFs, "Dragging " .. tostring(draggingBagItem.name or "bag") .. ". Drop on a bag slot to equip it there.", 0.95, 0.8, 0.25)
+        UpdateBagSlots()
+        if UpdateRowHighlights then UpdateRowHighlights() end
+        return true
+    end
+
+    local function EquipDraggedBagToSlot(bagIndex)
+        if not draggingBagItem or not PBAM.SelectedBot or not PBAM.Bridge or not PBAM.Bridge.ItemEquip then return false end
+        bagIndex = tonumber(bagIndex)
+        if not bagIndex or bagIndex < 1 or bagIndex > 4 then
+            LogStatus(statusFs, "Backpack slot cannot be replaced.", 1, 0.7, 0.25)
+            return false
+        end
+
+        local ok = PBAM.Bridge.ItemEquip(PBAM.SelectedBot, draggingBagItem.itemId, BagSlotHintFromBagIndex(bagIndex), draggingBagItem.bag, draggingBagItem.slot)
+        if ok then
+            LogStatus(statusFs, "Equip request sent for " .. tostring(draggingBagItem.name or draggingBagItem.itemId) .. " -> bag slot " .. tostring(bagIndex) .. ".", 0.35, 0.9, 0.45)
+            ClearBagDrag(false)
+            RequestInventoryRefresh()
+            RequestEquipmentRefresh()
+            return true
+        end
+
+        LogStatus(statusFs, "Could not send bag equip request.", 1, 0.35, 0.25)
+        return false
+    end
+
+    local function StartEquippedBagDrag(bagIndex)
+        if not equipMode or showingBank or not PBAM.SelectedBot then return false end
+        bagIndex = tonumber(bagIndex)
+        if not bagIndex or bagIndex < 1 or bagIndex > 4 then return false end
+        local inv = CurrentInventory()
+        local bagData = GetBagData(inv, bagIndex)
+        local bagItemId = tonumber(bagData and bagData.bagItemId) or 0
+        if bagItemId <= 0 then return false end
+        draggingEquippedBag = {
+            bagIndex = bagIndex,
+            itemId = bagItemId,
+            name = (GetItemInfo and select(1, GetItemInfo(bagItemId))) or ("Bag " .. tostring(bagIndex)),
+        }
+        ShowBagDragCursorByItemId(bagItemId)
+        LogStatus(statusFs, "Dragging equipped " .. tostring(draggingEquippedBag.name or "bag") .. ". Drop on another empty bag slot to move it.", 0.95, 0.8, 0.25)
+        UpdateBagSlots()
+        if UpdateRowHighlights then UpdateRowHighlights() end
+        return true
+    end
+
+    local function MoveDraggedEquippedBagToSlot(targetBagIndex)
+        if not draggingEquippedBag or not PBAM.SelectedBot or not PBAM.Bridge or not PBAM.Bridge.BagMove then return false end
+        targetBagIndex = tonumber(targetBagIndex)
+        if not targetBagIndex or targetBagIndex < 1 or targetBagIndex > 4 then
+            LogStatus(statusFs, "Backpack slot cannot be replaced.", 1, 0.7, 0.25)
+            return false
+        end
+        if targetBagIndex == tonumber(draggingEquippedBag.bagIndex) then
+            ClearBagDrag(false)
+            return true
+        end
+        local ok = PBAM.Bridge.BagMove(PBAM.SelectedBot, draggingEquippedBag.bagIndex, targetBagIndex)
+        if ok then
+            LogStatus(statusFs, "Move request sent for " .. tostring(draggingEquippedBag.name or draggingEquippedBag.itemId) .. " -> bag slot " .. tostring(targetBagIndex) .. ".", 0.35, 0.9, 0.45)
+            ClearBagDrag(false)
+            RequestInventoryRefresh()
+            RequestEquipmentRefresh()
+            return true
+        end
+        LogStatus(statusFs, "Could not send bag move request.", 1, 0.35, 0.25)
+        return false
+    end
+
     -- Helper function to get bag name from bridge data. bagIndex: 0 = backpack, 1-4 = bag slots.
     GetBagName = function(bagIndex)
         local inv = CurrentInventory()
@@ -337,6 +483,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         slot.slotIndex = slotIndex
         slot.bagIndex = slotToBagIndex[slotIndex] or 0
         slot:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        slot:RegisterForDrag("LeftButton")
 
         local bg = slot:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
@@ -363,6 +510,13 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         selected:Hide()
         slot.selected = selected
 
+        local dragGlow = slot:CreateTexture(nil, "OVERLAY")
+        dragGlow:SetAllPoints()
+        dragGlow:SetTexture("Interface\\Buttons\\WHITE8x8")
+        dragGlow:SetVertexColor(0.35, 0.9, 0.45, 0.20)
+        dragGlow:Hide()
+        slot.dragGlow = dragGlow
+
         local cap = slot:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         cap:SetPoint("BOTTOMRIGHT", slot, "BOTTOMRIGHT", -3, 2)
         cap:SetTextColor(1, 1, 1, 0.9)
@@ -371,12 +525,18 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
 
         slot:SetScript("OnClick", function(self, button)
             if button == "LeftButton" then
-                -- Always compare normalized numbers. Some WotLK clients/templates can hand
-                -- button scripts string-ish values after UI refreshes; without tonumber() the
-                -- second click can fail to match the already-selected bag.
                 local bagIndex = NormalizeBagIndex(self.bagIndex or ((self.slotIndex == 5) and 0 or self.slotIndex))
-                local current = NormalizeBagIndex(selectedBagSlot)
 
+                if draggingBagItem then
+                    EquipDraggedBagToSlot(bagIndex)
+                    return
+                end
+                if draggingEquippedBag then
+                    MoveDraggedEquippedBagToSlot(bagIndex)
+                    return
+                end
+
+                local current = NormalizeBagIndex(selectedBagSlot)
                 if current ~= nil and bagIndex ~= nil and current == bagIndex then
                     selectedBagSlot = nil
                 else
@@ -395,7 +555,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                     local key = string.lower(PBAM.SelectedBot)
                     local inv = PBAM.Bridge and PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
                     local bank = PBAM.Bridge and PBAM.Bridge.Bank and PBAM.Bridge.Bank[key]
-                    if inv and not inv.loading then
+                    if inv then
                         RenderInventoryRows(inv, bank)
                     else
                         UpdateRowHighlights()
@@ -407,7 +567,11 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             end
 
             if button == "RightButton" then
-                LogStatus(statusFs, "Bag drag/unequip needs backend support for a specific bag-slot move. Not faking it here.", 1, 0.7, 0.25)
+                if draggingBagItem or draggingEquippedBag then
+                    ClearBagDrag(true)
+                else
+                    LogStatus(statusFs, "Drag a bag from the inventory list or from another equipped bag slot onto one of these slots.", 0.95, 0.8, 0.25)
+                end
             end
         end)
 
@@ -427,6 +591,9 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             if bagIndex == 0 then
                 GameTooltip:SetText("Backpack", 1, 0.82, 0.22, true)
                 GameTooltip:AddLine(string.format("%d / %d slots used", used, total), 0.35, 0.9, 0.45, true)
+                if draggingBagItem or draggingEquippedBag then
+                    GameTooltip:AddLine("Backpack cannot be replaced.", 1, 0.35, 0.25, true)
+                end
             elseif bagData and tonumber(bagData.bagItemId or 0) > 0 then
                 local linked = false
                 if bagData.bagLink and tostring(bagData.bagLink):match("|Hitem:") then
@@ -444,10 +611,20 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                 GameTooltip:AddLine(string.format("Slot: Bag %d", bagIndex), 0.8, 0.8, 0.8, true)
                 GameTooltip:AddLine(string.format("%d / %d slots used", used, total), 0.35, 0.9, 0.45, true)
                 GameTooltip:AddLine("Left-click: filter this bag", 0.95, 0.8, 0.25, true)
+                if draggingBagItem then
+                    GameTooltip:AddLine("Drop dragged inventory bag here to equip to this slot.", 0.35, 0.9, 0.45, true)
+                elseif draggingEquippedBag then
+                    GameTooltip:AddLine("Drop dragged equipped bag here to move it to this slot.", 0.35, 0.9, 0.45, true)
+                end
             else
                 GameTooltip:SetText("Bag Slot " .. tostring(bagIndex), 1, 0.82, 0.22, true)
                 GameTooltip:AddLine("Empty bag slot", 0.8, 0.8, 0.8, true)
                 GameTooltip:AddLine("Left-click: show only this slot (will be empty)", 0.95, 0.8, 0.25, true)
+                if draggingBagItem then
+                    GameTooltip:AddLine("Drop dragged inventory bag here to equip to this slot.", 0.35, 0.9, 0.45, true)
+                elseif draggingEquippedBag then
+                    GameTooltip:AddLine("Drop dragged equipped bag here to move it to this slot.", 0.35, 0.9, 0.45, true)
+                end
             end
 
             if selectedBagSlot == bagIndex then
@@ -460,6 +637,19 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             hoverBagSlot = nil
             UpdateRowHighlights()
             GameTooltip:Hide()
+        end)
+
+        slot:SetScript("OnDragStart", function(self)
+            StartEquippedBagDrag(self.bagIndex)
+        end)
+
+        slot:SetScript("OnReceiveDrag", function(self)
+            local bagIndex = NormalizeBagIndex(self.bagIndex or ((self.slotIndex == 5) and 0 or self.slotIndex))
+            if draggingBagItem then
+                EquipDraggedBagToSlot(bagIndex)
+            elseif draggingEquippedBag then
+                MoveDraggedEquippedBagToSlot(bagIndex)
+            end
         end)
 
         return slot
@@ -498,6 +688,9 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
 
                 if slot.selected then
                     if selectedBagSlot == bagIndex then slot.selected:Show() else slot.selected:Hide() end
+                end
+                if slot.dragGlow then
+                    if (draggingBagItem or draggingEquippedBag) and bagIndex >= 1 and bagIndex <= 4 then slot.dragGlow:Show() else slot.dragGlow:Hide() end
                 end
             end
         end
@@ -570,15 +763,15 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     end)
     PBAM.Bridge.RegisterCallback("NativeActionResult", function(result)
         if not result or PBAM.CurrentTab ~= "Inventory" then return end
-        if result.type ~= "ITEM_EQUIP" and result.type ~= "ITEM_TRADE" then return end
+        if result.type ~= "ITEM_EQUIP" and result.type ~= "ITEM_TRADE" and result.type ~= "BAG_MOVE" then return end
         if result.botName ~= PBAM.SelectedBot then return end
         local ok = result.result == "OK"
-        local label = result.type == "ITEM_TRADE" and "Trade" or "Equip"
+        local label = result.type == "ITEM_TRADE" and "Trade" or (result.type == "BAG_MOVE" and "Bag move" or "Equip")
         local extra = result.type == "ITEM_TRADE" and (" moved=" .. tostring(result.moved or 0)) or ""
         LogStatus(panel.StatusText, label .. (ok and " complete" or " failed") .. extra .. (ok and "" or (": " .. tostring(result.reason or "unknown"))), ok and 0.35 or 1, ok and 0.9 or 0.35, ok and 0.45 or 0.25)
         if ok and PBAM.SelectedBot then
             After(0.75, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
-            if result.type == "ITEM_EQUIP" and PBAM.RefreshEquipmentTab then After(0.75, function() PBAM.RefreshEquipmentTab(PBAM.SelectedBot, true) end) end
+            if (result.type == "ITEM_EQUIP" or result.type == "BAG_MOVE") and PBAM.RefreshEquipmentTab then After(0.75, function() PBAM.RefreshEquipmentTab(PBAM.SelectedBot, true) end) end
         end
     end)
     local emptyFs = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -1170,7 +1363,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
 
     -- Debounce: prevent rapid overlapping refresh cycles (e.g. callback → OnBotSelect → this).
     local lastRefreshTime = 0
-    local function RequestInventoryRefresh()
+    RequestInventoryRefresh = function()
         local now = GetTime() or 0
         if PBAM.SelectedBot and (now - lastRefreshTime) < 3 then return end
         lastRefreshTime = now
@@ -1190,7 +1383,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         end)
     end
 
-    local function RequestEquipmentRefresh()
+    RequestEquipmentRefresh = function()
         if not PBAM.SelectedBot or not PBAM.RefreshEquipmentTab then return end
         After(0.75, function() if PBAM.SelectedBot and PBAM.RefreshEquipmentTab then PBAM.RefreshEquipmentTab(PBAM.SelectedBot, true) end end)
         After(1.75, function() if PBAM.SelectedBot and PBAM.RefreshEquipmentTab then PBAM.RefreshEquipmentTab(PBAM.SelectedBot, true) end end)
@@ -1241,8 +1434,11 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                 local selected = selectedText and r.itemText == selectedText
                 local filtered = selectedBagSlot ~= nil and rowBag ~= nil and rowBag == selectedBagSlot
                 local hovered = hoverBagSlot ~= nil and rowBag ~= nil and rowBag == hoverBagSlot
+                local dragging = draggingBagItem and r.item == draggingBagItem.item
 
-                if selected then
+                if dragging then
+                    r.bg:SetVertexColor(0.28, 0.52, 0.24, i % 2 == 0 and 0.50 or 0.38)
+                elseif selected then
                     r.bg:SetVertexColor(0.95, 0.72, 0.18, 0.36)
                 elseif filtered then
                     r.bg:SetVertexColor(0.20, 0.32, 0.48, i % 2 == 0 and 0.45 or 0.32)
@@ -1404,9 +1600,18 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         local bg = r:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints(); bg:SetTexture("Interface\\Buttons\\WHITE8x8"); bg:SetVertexColor(0.10,0.10,0.12, i % 2 == 0 and 0.32 or 0.18)
         r.bg = bg
         r:EnableMouse(true)
+        r:RegisterForDrag("LeftButton")
         r.icon = r:CreateTexture(nil, "OVERLAY"); r.icon:SetSize(22,22); r.icon:SetPoint("LEFT", r, "LEFT", 6, 0)
         r.text = r:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); r.text:SetPoint("LEFT", r.icon, "RIGHT", 8, 0); r.text:SetPoint("RIGHT", r, "RIGHT", -8, 0); r.text:SetJustifyH("LEFT")
         r:SetScript("OnMouseUp", HandleItemClick)
+        r:SetScript("OnDragStart", function(self)
+            if StartBagDrag(self.item) and GameTooltip and GameTooltip:IsOwned(self) then GameTooltip:Hide() end
+        end)
+        r:SetScript("OnDragStop", function(self)
+            if draggingBagItem and draggingBagItem.item == self.item then
+                LogStatus(statusFs, "Drop the dragged bag onto a bag slot, or right-click a bag slot to cancel.", 0.95, 0.8, 0.25)
+            end
+        end)
         r:SetScript("OnEnter", function(self)
             if not self.itemText or self.itemText == "" then return end
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -1416,7 +1621,12 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                 GameTooltip:ClearLines()
                 GameTooltip:SetMerchantItem(self.merchantItem.index)
             else
-                if equipMode then GameTooltip:AddLine("Equip Mode: left=normal/main hand, right=offhand/standard legacy equip.", 0.35, 0.9, 0.45, true) end
+                if equipMode then
+                    GameTooltip:AddLine("Equip Mode: left=normal/main hand, right=offhand/standard legacy equip.", 0.35, 0.9, 0.45, true)
+                    if IsEquippableBagItem(self.item) then
+                        GameTooltip:AddLine("Drag this bag onto an equipped bag slot above to place it there.", 0.95, 0.8, 0.25, true)
+                    end
+                end
                 if tradeMode then GameTooltip:AddLine("Trade Mode: click to insert item into open trade ('t' + 'give' commands)", 0.95, 0.8, 0.25, true) end
                 if buyMode and self.merchantItem then GameTooltip:AddLine("Buy Mode: left-click buys 1, right-click buys one merchant stack.", 0.35, 0.9, 0.45, true) end
             end
