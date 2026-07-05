@@ -14,9 +14,9 @@ It brings the most useful day-to-day bot management tools into one window with a
 |---------|-------------|------------------------|
 | **Protocol** | `MBOT` prefix | `PBAM` prefix |
 | **Native Bridge Endpoints** | ❌ None | ✅ 8 endpoints |
-| **Inventory Bag Filtering** | ❌ No | ✅ With dropdown UI |
+| **Inventory Bag Filtering** | ❌ No | ✅ With equipped bag slot UI |
 | **Targeted Crafting** | ❌ Manual only | ✅ Targeted craft modes |
-| **Trade Mode** | ✅ Basic (legacy) | ✅ Enhanced (native bridge) |
+| **Trade Mode** | ✅ Basic (legacy) | ✅ Enhanced (native bridge + player picker helper) |
 | **Talent Reset** | Basic | ✅ Custom builds + 0-0-0 reset |
 | **Quest Support** | ❌ None | ✅ Abandon/share via bridge |
 | **Optimizations** | Standard | ✅ Throttling, debouncing, batching |
@@ -35,15 +35,15 @@ It brings the most useful day-to-day bot management tools into one window with a
 
 - Roster overview for bots and the logged-in player (with roster sort options)
 - Talents viewer/planner with native bridge talent apply (including custom builds and reset via 0-0-0)
-- Inventory view with exact item locations, bag entries, and equipment tabs
+- Inventory view with exact item locations, equipped bag slot bar, bag filtering, bank view, and local player inventory support
 - Bank view (when banker is nearby)
-- Professions and recipe browser with targeted craft modes (normal, trade slot, bag item, equipped item)
+- Professions and recipe browser with targeted craft modes (normal, trade slot, bag item, equipped item) and rarity-colored scrollable item pickers
 - Spells tab with native bridge spell casting and detailed failure reason mapping
-- Trainer spell view and learning
+- Trainer spell view and learning, including batch scan/train workflows and optional profession-owner filtering
 - Equipment tab with bridge data display and fallback to inspect
 - Outfits view
 - Search/filter tools and minimap launcher
-- Options panel with Silent Mode, Debug Mode, Hide Minimap Button, Suppress Legacy Sending, Confirm Destructive Actions, Default Roster Sort, and Refresh Throttle
+- Options panel with Silent Mode, Debug Mode, Hide Minimap Button, Suppress Legacy Sending, Confirm Destructive Actions, Default Roster Sort, Refresh Throttle, and Inventory player-picker visibility control
 
 ## Requirements
 
@@ -76,7 +76,7 @@ It brings the most useful day-to-day bot management tools into one window with a
 
 - PBAltManager co-exists with Multibot-Chatless and CleanBot.
 - All planned implementation phases are complete. See [Roadmap](https://github.com/Jellypowered/PBAltManager/wiki/Roadmap).
-- The logged-in player is supported primarily through the Roster tab; bot-only tabs may hide when your own character is selected.
+- The logged-in player is supported in the Roster tab and now has a local Inventory view in the Extended branch. Other tabs may still hide when your own character is selected.
 - The clear-selection button now performs a full PBAltManager UI reset to get back to a fresh-start style state without reloading the whole WoW UI, followed by a delayed full refresh after bridge data has time to return.
 - Bot quests in the Roster tab are rendered as clickable quest links when bridge quest IDs are available.
 
@@ -109,17 +109,27 @@ It brings the most useful day-to-day bot management tools into one window with a
 
 ### Inventory Tab Enhancements (Extended only)
 
-- ✅ **Bag filtering UI** - Filter inventory by equipped bag slots with dropdown
+- ✅ **Bag filtering UI** - Filter inventory by the equipped bag slot bar (backpack + bag slots 1-4)
 - ✅ **Exact location tracking** - `INV_BAG` and `INV_ITEM_LOC` packets provide precise bag+slot locations
 - ✅ **Equipped bag visualization** - Shows backpack + 4 equipped bag slots (slots 1-4)
+- ✅ **Bag drag helpers** - Drag inventory bags onto equipped bag slots, move equipped bags between bag slots, and right-click to cancel drag state
 - ✅ **Per-bag empty states** - Context-aware messages when specific bags are empty
+- ✅ **Player inventory picker** - Scrollable rarity-colored local player item picker with item tooltips
+- ✅ **Player trade helper** - In Trade Mode, picker-selected local player bag items can fill the normal trade slots (1-6)
+- ✅ **Local player inventory view** - Selecting your own character now opens a local Inventory tab view in Extended
 
 ### Professions Tab Enhancements (Extended only)
 
 - ✅ **Target mode dropdown** - Select from: Normal, Trade Slot, Bag Item, Equipped Item
-- ✅ **Target item dropdown** - Populate craft targets from inventory
+- ✅ **Scrollable target item picker** - Rarity-colored item entries with working item tooltips for long target lists
 - ✅ **Trade event integration** - Listens for `TRADE_SHOW`, `TRADE_CLOSED`, `TRADE_TARGET_ITEM_CHANGED`, etc.
 - ✅ **Enhanced status messages** - Detailed feedback on cast results and trade state
+
+### Trainer Tab Enhancements (Extended only)
+
+- ✅ **Batch scan summaries** - Summarizes trainer results across the roster by spell/skill
+- ✅ **Batch Train All** - Staggered roster-wide trainer learn requests
+- ✅ **Profession-owner filter** - Optional Batch Mode filter to include only bots who already have the trainer's profession (primary or secondary where detection is available)
 
 ### Performance Optimizations (Extended)
 
@@ -161,7 +171,7 @@ Once set up:
 1. The `PBAM` protocol prefix is used automatically
 2. Native endpoints are available on first load
 3. New UI elements appear in the Inventory and Professions tabs
-4. Check the [Inventory](https://github.com/Jellypowered/PBAltManager/wiki/Inventory) and [Professions](https://github.com/Jellypowered/PBAltManager/wiki/Professions) wiki pages for usage guides
+4. Check the [Inventory](https://github.com/Jellypowered/PBAltManager/wiki/Inventory), [Professions](https://github.com/Jellypowered/PBAltManager/wiki/Professions), and [Trainer](https://github.com/Jellypowered/PBAltManager/wiki/Trainer) wiki pages for usage guides
 
 ## Documentation
 

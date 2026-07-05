@@ -271,6 +271,20 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
     professionFilterLabel:SetText("Profession Only")
     professionFilterLabel:SetTextColor(0.9, 0.9, 0.9, 1)
 
+    local function UpdateProfessionFilterCheckboxState()
+        local enabled = batchModeEnabled and true or false
+        professionFilterCheckbox:SetEnabled(enabled)
+        if not enabled then
+            professionFilterCheckbox:SetChecked(false)
+            professionFilterEnabled = false
+            professionFilterLabel:SetTextColor(0.45, 0.45, 0.45, 1)
+        else
+            professionFilterCheckbox:SetChecked(professionFilterEnabled and true or false)
+            professionFilterLabel:SetTextColor(0.9, 0.9, 0.9, 1)
+        end
+    end
+    UpdateProfessionFilterCheckboxState()
+
     panel.StatusText = statusFs
 
     local scroll = CreateFrame("ScrollFrame", nil, panel)
@@ -520,6 +534,11 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
     end
     
     professionFilterCheckbox:SetScript("OnClick", function(self)
+        if not batchModeEnabled then
+            self:SetChecked(false)
+            professionFilterEnabled = false
+            return
+        end
         professionFilterEnabled = not not self:GetChecked()
         if batchModeEnabled then StartBatchScan() end
         UpdateTrainAllButtonState()
@@ -531,6 +550,7 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
         batchModeEnabled = checked
         
         if checked then
+            UpdateProfessionFilterCheckboxState()
             StartBatchScan()
         else
             -- Disable batch mode
@@ -541,9 +561,11 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
             batchScanPending = {}
             batchScanPendingSince = {}
             pendingBatchScanAfterSkillLoad = false
+            professionFilterEnabled = false
             LogStatus("Batch mode disabled.", 0.75, 0.75, 0.75)
         end
         
+        UpdateProfessionFilterCheckboxState()
         UpdateTrainAllButtonState()
     end)
     

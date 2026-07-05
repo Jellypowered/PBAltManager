@@ -174,61 +174,9 @@ local function CreateDropdown(parent, values)
     dropdown.values = values or {}
     dropdown.selectedValue = nil
     dropdown.visibleValues = {}
-    dropdown.scrollOffset = 0
-    dropdown.maxVisibleItems = 18
 
     local function EntryDisplayLabel(entry)
         return (entry and (entry.dropdownLabel or entry.label)) or ""
-    end
-
-    local function ClampScrollOffset(self)
-        local maxOffset = math.max(0, #(self.visibleValues or {}) - (tonumber(self.maxVisibleItems) or 18))
-        self.scrollOffset = math.max(0, math.min(tonumber(self.scrollOffset) or 0, maxOffset))
-    end
-
-    local function RefreshOpenDropdown(self)
-        if UIDropDownMenu_Refresh then
-            UIDropDownMenu_Refresh(self, nil, 1)
-            return
-        end
-        if CloseDropDownMenus then CloseDropDownMenus() end
-        if ToggleDropDownMenu then ToggleDropDownMenu(1, nil, self, self, 0, 0) end
-    end
-
-    local function HandleDropdownMouseWheel(owner, delta)
-        if not owner or #(owner.visibleValues or {}) <= (tonumber(owner.maxVisibleItems) or 18) then return end
-        local previous = owner.scrollOffset or 0
-        owner.scrollOffset = previous - delta
-        ClampScrollOffset(owner)
-        if owner.scrollOffset ~= previous then
-            RefreshOpenDropdown(owner)
-        end
-    end
-
-    local function ApplyEntryToButton(button, entry)
-        if not button then return end
-        button._pbamDropdownEntry = entry
-        button._pbamDropdownOwner = button._pbamDropdownOwner or (button:GetParent() and button:GetParent()._pbamOwner) or nil
-        if button._pbamHasPBAMTooltipHooks then return end
-        button:HookScript("OnEnter", SetDropdownButtonTooltip)
-        button:HookScript("OnLeave", ClearDropdownButtonTooltip)
-        button:EnableMouseWheel(true)
-        button:HookScript("OnMouseWheel", function(self, delta)
-            HandleDropdownMouseWheel(self._pbamDropdownOwner or (self:GetParent() and self:GetParent()._pbamOwner), delta)
-        end)
-        button._pbamHasPBAMTooltipHooks = true
-    end
-
-    local function AttachMenuScrolling(self, level)
-        local listFrame = _G["DropDownList" .. tostring(level or 1)]
-        if not listFrame then return end
-        listFrame._pbamOwner = self
-        if listFrame._pbamHasMouseWheel then return end
-        listFrame:EnableMouseWheel(true)
-        listFrame:HookScript("OnMouseWheel", function(frame, delta)
-            HandleDropdownMouseWheel(frame._pbamOwner, delta)
-        end)
-        listFrame._pbamHasMouseWheel = true
     end
 
     local function RebuildVisibleValues(self)
@@ -252,32 +200,23 @@ local function CreateDropdown(parent, values)
         elseif self.visibleValues[1] then
             self.selectedValue = self.visibleValues[1].value
         end
-        ClampScrollOffset(self)
     end
 
-    UIDropDownMenu_Initialize(dropdown, function(self, level)
+    UIDropDownMenu_Initialize(dropdown, function(self)
         RebuildVisibleValues(self)
-        level = level or 1
-        AttachMenuScrolling(self, level)
-        local buttonIndex = 0
-        local startIndex = (self.scrollOffset or 0) + 1
-        local endIndex = math.min(#self.visibleValues, startIndex + (tonumber(self.maxVisibleItems) or 18) - 1)
-        for entryIndex = startIndex, endIndex do
-            local entry = self.visibleValues[entryIndex]
+        for _, entry in ipairs(self.visibleValues) do
             local info = UIDropDownMenu_CreateInfo()
-            buttonIndex = buttonIndex + 1
             info.text = EntryDisplayLabel(entry)
             info.value = entry.value
             info.checked = (entry.value == self.selectedValue)
             info.icon = entry.icon
             info.tooltipTitle = entry.tooltipTitle or entry.label or tostring(entry.value)
-            info.tooltipText = (entry.tooltipItemLink or entry.tooltipItemId) and nil or (entry.tooltipText or entry.tooltip or nil)
+            info.tooltipText = entry.tooltipText or entry.tooltip or nil
             info.func = function()
                 self:SetValue(entry.value)
                 if entry.onSelect then entry.onSelect(entry.value, entry) end
             end
-            UIDropDownMenu_AddButton(info, level)
-            ApplyEntryToButton(_G["DropDownList" .. tostring(level) .. "Button" .. tostring(buttonIndex)], entry)
+            UIDropDownMenu_AddButton(info)
         end
     end)
 
@@ -316,6 +255,207 @@ local function CreateDropdown(parent, values)
     return dropdown
 end
 
+local activeScrollablePicker = nil
+local scrollablePickerDismissFrame = CreateFrame("Button", nil, UIParent)
+scrollablePickerDismissFrame:SetAllPoints(UIParent)
+scrollablePickerDismissFrame:SetFrameStrata("DIALOG")
+scrollablePickerDismissFrame:Hide()
+scrollablePickerDismissFrame:SetScript("OnClick", function()
+    if activeScrollablePicker and activeScrollablePicker.HidePopup then activeScrollablePicker:HidePopup() end
+end)
+
+local function CreateScrollableItemPicker(parent, width, popupHeight)
+    local picker = CreateFrame("Frame", nil, parent)
+    picker:SetSize(width or 220, 24)
+    picker.values = {}
+    picker.visibleValues = {}
+    picker.selectedValue = nil
+
+    picker.button = CreateFrame("Button", nil, picker)
+    picker.button:SetAllPoints(picker)
+    if PBAM and PBAM.ApplyBackdrop then PBAM.ApplyBackdrop(picker.button, 0.92) end
+    picker.button:SetBackdropBorderColor(0.45, 0.34, 0.10, 0.95)
+    picker.button:SetBackdropColor(0.12, 0.12, 0.14, 0.95)
+
+    picker.button.icon = picker.button:CreateTexture(nil, "ARTWORK")
+    picker.button.icon:SetSize(16, 16)
+    picker.button.icon:SetPoint("LEFT", picker.button, "LEFT", 6, 0)
+    picker.button.icon:Hide()
+
+    picker.button.text = picker.button:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    picker.button.text:SetPoint("LEFT", picker.button, "LEFT", 8, 0)
+    picker.button.text:SetPoint("RIGHT", picker.button, "RIGHT", -22, 0)
+    picker.button.text:SetJustifyH("LEFT")
+    picker.button.text:SetText("Select...")
+
+    picker.button.arrow = picker.button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    picker.button.arrow:SetPoint("RIGHT", picker.button, "RIGHT", -8, 0)
+    picker.button.arrow:SetText("v")
+    picker.button.arrow:SetTextColor(0.95, 0.80, 0.22, 1)
+
+    picker.popup = CreateFrame("Frame", nil, UIParent)
+    picker.popup:SetFrameStrata("FULLSCREEN_DIALOG")
+    picker.popup:SetFrameLevel((scrollablePickerDismissFrame:GetFrameLevel() or 0) + 10)
+    picker.popup:SetPoint("TOPLEFT", picker, "BOTTOMLEFT", 0, -2)
+    picker.popup:SetSize(width or 220, popupHeight or 220)
+    if PBAM and PBAM.ApplyBackdrop then PBAM.ApplyBackdrop(picker.popup, 0.96) end
+    picker.popup:Hide()
+
+    picker.scroll = CreateFrame("ScrollFrame", nil, picker.popup)
+    picker.scroll:SetPoint("TOPLEFT", picker.popup, "TOPLEFT", 6, -6)
+    picker.scroll:SetPoint("BOTTOMRIGHT", picker.popup, "BOTTOMRIGHT", -6, 6)
+    picker.scroll:EnableMouseWheel(true)
+    picker.scroll:SetScript("OnMouseWheel", function(self, delta)
+        self:SetVerticalScroll(math.max(0, math.min(self:GetVerticalScrollRange(), self:GetVerticalScroll() - delta * 20)))
+    end)
+
+    picker.content = CreateFrame("Frame", nil, picker.scroll)
+    picker.content:SetWidth((width or 220) - 20)
+    picker.scroll:SetScrollChild(picker.content)
+
+    picker.rows = {}
+
+    local function EntryDisplayLabel(entry)
+        return (entry and (entry.dropdownLabel or entry.label)) or ""
+    end
+
+    local function RebuildVisibleValues(self)
+        wipe(self.visibleValues)
+        for _, entry in ipairs(self.values or {}) do
+            if not IsHiddenDropdownValue(entry) then table.insert(self.visibleValues, entry) end
+        end
+        if self.selectedValue then
+            local stillVisible = false
+            for _, entry in ipairs(self.visibleValues) do
+                if entry.value == self.selectedValue then stillVisible = true break end
+            end
+            if not stillVisible then
+                self.selectedValue = self.visibleValues[1] and self.visibleValues[1].value or nil
+            end
+        elseif self.visibleValues[1] then
+            self.selectedValue = self.visibleValues[1].value
+        end
+    end
+
+    local function UpdateButton(self)
+        local entry = self:GetSelectedEntry()
+        local label = EntryDisplayLabel(entry)
+        if label == "" then label = "Select..." end
+        self.button.text:SetText(label)
+        if entry and entry.icon then
+            self.button.icon:SetTexture(entry.icon)
+            self.button.icon:Show()
+            self.button.text:ClearAllPoints()
+            self.button.text:SetPoint("LEFT", self.button.icon, "RIGHT", 6, 0)
+            self.button.text:SetPoint("RIGHT", self.button, "RIGHT", -22, 0)
+        else
+            self.button.icon:Hide()
+            self.button.text:ClearAllPoints()
+            self.button.text:SetPoint("LEFT", self.button, "LEFT", 8, 0)
+            self.button.text:SetPoint("RIGHT", self.button, "RIGHT", -22, 0)
+        end
+    end
+
+    local function AcquireRow(index)
+        local row = picker.rows[index]
+        if row then row:Show(); return row end
+        row = CreateFrame("Button", nil, picker.content)
+        row:SetHeight(20)
+        row:SetPoint("TOPLEFT", picker.content, "TOPLEFT", 0, -((index - 1) * 20))
+        row:SetPoint("RIGHT", picker.content, "RIGHT", 0, 0)
+        row.bg = row:CreateTexture(nil, "BACKGROUND")
+        row.bg:SetAllPoints()
+        row.bg:SetTexture("Interface\\Buttons\\WHITE8x8")
+        row.bg:SetVertexColor(0.10, 0.10, 0.12, 0.65)
+        row.highlight = row:CreateTexture(nil, "HIGHLIGHT")
+        row.highlight:SetAllPoints()
+        row.highlight:SetTexture("Interface\\Buttons\\WHITE8x8")
+        row.highlight:SetVertexColor(0.25, 0.22, 0.10, 0.35)
+        row.icon = row:CreateTexture(nil, "ARTWORK")
+        row.icon:SetSize(16, 16)
+        row.icon:SetPoint("LEFT", row, "LEFT", 4, 0)
+        row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.text:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
+        row.text:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+        row.text:SetJustifyH("LEFT")
+        row:HookScript("OnEnter", SetDropdownButtonTooltip)
+        row:HookScript("OnLeave", ClearDropdownButtonTooltip)
+        picker.rows[index] = row
+        return row
+    end
+
+    function picker:HidePopup()
+        self.popup:Hide()
+        scrollablePickerDismissFrame:Hide()
+        if activeScrollablePicker == self then activeScrollablePicker = nil end
+    end
+
+    function picker:Refresh()
+        RebuildVisibleValues(self)
+        UpdateButton(self)
+        for _, row in ipairs(self.rows) do row:Hide() end
+        for i, entry in ipairs(self.visibleValues) do
+            local row = AcquireRow(i)
+            row._pbamDropdownEntry = entry
+            if entry.icon then
+                row.icon:SetTexture(entry.icon)
+                row.icon:Show()
+                row.text:ClearAllPoints()
+                row.text:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
+                row.text:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+            else
+                row.icon:Hide()
+                row.text:ClearAllPoints()
+                row.text:SetPoint("LEFT", row, "LEFT", 4, 0)
+                row.text:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+            end
+            row.text:SetText(EntryDisplayLabel(entry))
+            row:SetScript("OnClick", function()
+                self:SetValue(entry.value)
+                self:HidePopup()
+                if entry.onSelect then entry.onSelect(entry.value, entry) end
+            end)
+        end
+        self.content:SetHeight(math.max(1, #self.visibleValues * 20))
+    end
+
+    function picker:SetValues(newValues)
+        self.values = newValues or {}
+        self:Refresh()
+    end
+
+    function picker:GetSelectedEntry()
+        for _, entry in ipairs(self.visibleValues or {}) do
+            if entry.value == self.selectedValue then return entry end
+        end
+        return nil
+    end
+
+    function picker:SetValue(value)
+        self.selectedValue = value
+        self:Refresh()
+    end
+
+    picker.button:SetScript("OnClick", function()
+        if picker.popup:IsShown() then
+            picker:HidePopup()
+            return
+        end
+        if activeScrollablePicker and activeScrollablePicker ~= picker and activeScrollablePicker.HidePopup then
+            activeScrollablePicker:HidePopup()
+        end
+        activeScrollablePicker = picker
+        picker:Refresh()
+        scrollablePickerDismissFrame:Show()
+        picker.popup:Show()
+    end)
+
+    picker.popup:SetScript("OnMouseDown", function() end)
+    picker:SetScript("OnHide", function() picker:HidePopup() end)
+    picker:Refresh()
+    return picker
+end
+
 PBAM.NormalizeName = NormalizeName
 PBAM.WrapFontString = WrapFontString
 PBAM.GetSelectedName = GetSelectedName
@@ -331,3 +471,4 @@ PBAM.SetStatusText = SetStatusText
 PBAM.SetButtonEnabled = SetButtonEnabled
 PBAM.CreateSmallButton = CreateSmallButton
 PBAM.CreateDropdown = CreateDropdown
+PBAM.CreateScrollableItemPicker = CreateScrollableItemPicker
