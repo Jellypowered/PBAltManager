@@ -47,6 +47,17 @@ if dbicon then
     dbicon:Register("PBAltManager", miniButton, PBAMMinimapDB)
 end
 
+function PBAM.SetMinimapHidden(hidden)
+    PBAMConfig.Minimap = PBAMConfig.Minimap or {}
+    PBAMConfig.Minimap.hide = hidden and true or false
+    PBAMMinimapDB.hide = PBAMConfig.Minimap.hide
+    if dbicon then
+        if PBAMMinimapDB.hide and dbicon.Hide then dbicon:Hide("PBAltManager") end
+        if not PBAMMinimapDB.hide and dbicon.Show then dbicon:Show("PBAltManager") end
+        if dbicon.Refresh then dbicon:Refresh("PBAltManager", PBAMMinimapDB) end
+    end
+end
+
 local syncFrame = CreateFrame("Frame")
 syncFrame:RegisterEvent("PLAYER_LOGIN")
 syncFrame:RegisterEvent("PLAYER_LOGOUT")

@@ -15,6 +15,84 @@ local function LearnReason(reason)
     return map[reason] or (reason ~= "" and reason or "Unknown trainer result.")
 end
 
+local TRAINER_PROFESSION_ALIASES = {
+    alchemy = { "master alchemy trainer", "alchemy trianer", "alchemist", "journeyman alchemist", "expert alchemist", "artisan alchemist" },
+    blacksmithing = { "blacksmithing", "blacksmith", "armorsmith", "weaponsmith" },
+    enchanting = { "enchanting", "enchanter" },
+    engineering = { "engineering", "engineer" },
+    herbalism = { "herbalism", "herbalist" },
+    inscription = { "inscription", "inscriber", "scribe" },
+    jewelcrafting = { "jewelcrafting", "jewelcrafter", "gem cutting", "gemcutting" },
+    leatherworking = { "leatherworking", "leatherworker" },
+    mining = { "mining", "miner" },
+    skinning = { "skinning", "skinner" },
+    tailoring = { "tailoring", "tailor" },
+    cooking = { "cooking trainer", "cooking trainer & supplies", "grand master cooking trainer", "superior cook", "cook",
+                "barmaid", "chef", "baker" },
+    fishing = { "fishing trainer", "grand master fishing trainer", "fishing trianer & supplies", "grand master fishing trianer & supplies" },
+    firstaid = { "first aid trainer", "physician", "grand master first aid trainer" },
+}
+
+local function NormalizeProfessionKey(value)
+    return string.lower(tostring(value or "")):gsub("[_%s%-]+", "")
+end
+
+local function DetectTrainerProfessionFromText(text)
+    text = string.lower(tostring(text or ""))
+    if text == "" then return nil end
+    for professionKey, aliases in pairs(TRAINER_PROFESSION_ALIASES) do
+        for _, alias in ipairs(aliases) do
+            if text:find(string.lower(alias), 1, true) then return professionKey end
+        end
+    end
+    return nil
+end
+
+local function GetOpenTrainerProfessionKey()
+    if not GetNumTrainerServices or not GetTrainerServiceInfo then return nil end
+    local count = tonumber(GetNumTrainerServices()) or 0
+    for i = 1, count do
+        local serviceName = GetTrainerServiceInfo(i)
+        local detected = DetectTrainerProfessionFromText(serviceName)
+        if detected then return detected end
+    end
+    return nil
+end
+
+local function GetTrainerProfessionKey(trainer)
+    local detected = trainer and DetectTrainerProfessionFromText(trainer.trainerName) or nil
+    if detected then return detected end
+    for _, spell in ipairs((trainer and trainer.spells) or {}) do
+        detected = DetectTrainerProfessionFromText(spell and spell.name)
+        if detected then return detected end
+    end
+    detected = GetOpenTrainerProfessionKey()
+    if detected then return detected end
+    return nil
+end
+
+local function BotHasProfession(botName, professionKey)
+    local key = string.lower(tostring(botName or ""))
+    local wanted = NormalizeProfessionKey(professionKey)
+    if key == "" or wanted == "" then return false end
+
+    local skills = PBAM.Bridge and PBAM.Bridge.Professions and PBAM.Bridge.Professions[key] or nil
+    for _, bucket in ipairs({ skills and skills.primary, skills and skills.secondary, skills and skills.other }) do
+        for _, entry in ipairs(bucket or {}) do
+            if NormalizeProfessionKey(entry.key or entry.displayName or entry.name) == wanted then return true end
+        end
+    end
+
+    local crafting = PBAM.Bridge and PBAM.Bridge.Crafting and PBAM.Bridge.Crafting[key] or nil
+    if crafting and crafting.professions then
+        for name in pairs(crafting.professions) do
+            if NormalizeProfessionKey(name) == wanted then return true end
+        end
+    end
+
+    return false
+end
+
 local function TrainerSpellIcon(spellId, spellName)
     if GetSpellTexture and tonumber(spellId) and tonumber(spellId) > 0 then
         local tex = GetSpellTexture(tonumber(spellId))
@@ -39,7 +117,10 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
     
     -- Batch mode state
     local batchModeEnabled = false
+    local professionFilterEnabled = false
+    local pendingBatchScanAfterSkillLoad = false
     local trainerDataByBot = {}  -- { [botName] = trainerData }
+    local batchEligibleBots = {}
     local isBatchTraining = false
     local batchScanExpected = 0
     local batchScanCompleted = 0
@@ -101,6 +182,13 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
         end
     end)
 
+    PBAM.Bridge.RegisterCallback("BotSkillsBulkUpdated", function()
+        if pendingBatchScanAfterSkillLoad and batchModeEnabled and professionFilterEnabled and PBAM.CurrentTab == "Trainer" and StartBatchScan then
+            pendingBatchScanAfterSkillLoad = false
+            StartBatchScan()
+        end
+    end)
+
     local emptyFs = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     emptyFs:SetPoint("CENTER", panel, "CENTER"); emptyFs:SetText("Select a bot to view trainer spells"); emptyFs:SetTextColor(0.55,0.55,0.55,1)
     
@@ -119,7 +207,7 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
     local header = CreateFrame("Frame", nil, panel)
     header:SetPoint("TOPLEFT", panel, "TOPLEFT", MARGIN, -MARGIN); header:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -MARGIN, -MARGIN); header:SetHeight(90)
     PBAM.ApplyBackdrop(header, 0.55); PBAM.CreateSectionHeader(header, "Trainer", -10, 13)
-    statusFs = header:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); statusFs:SetPoint("TOPLEFT", header, "TOPLEFT", 18, -34); statusFs:SetPoint("RIGHT", header, "RIGHT", -290, 0); statusFs:SetJustifyH("LEFT"); statusFs:SetTextColor(0.7,0.7,0.7,1)
+    statusFs = PBAM.AttachSharedStatusText(panel, "Select a trainer target and bot, then refresh if needed.", "info")
     -- Refresh button (rightmost)
     local refreshBtn = CreateFrame("Button", nil, header, "UIPanelButtonTemplate")
     refreshBtn:SetSize(88, 22)
@@ -165,10 +253,38 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
     batchLabel:SetPoint("RIGHT", batchCheckbox, "RIGHT", -28, 0)
     batchLabel:SetText("Batch Mode")
     batchLabel:SetTextColor(0.9, 0.9, 0.9, 1)
-    
-    
-    
-    panel.StatusText = statusFs
+
+    local professionFilterCheckbox = CreateFrame("CheckButton", nil, header, "UICheckButtonTemplate")
+    professionFilterCheckbox:SetSize(24, 24)
+    professionFilterCheckbox:SetPoint("RIGHT", batchLabel, "LEFT", -120, 0)
+    professionFilterCheckbox:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Profession Owners Only", 1, 0.82, 0.22, true)
+        GameTooltip:AddLine("In batch mode, only scan/train bots that already have this trainer's profession.", 0.8, 0.8, 0.8, true)
+        GameTooltip:AddLine("Requires cached profession data for the roster.", 0.6, 0.6, 0.6, true)
+        GameTooltip:Show()
+    end)
+    professionFilterCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    local professionFilterLabel = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    professionFilterLabel:SetPoint("RIGHT", professionFilterCheckbox, "RIGHT", -28, 0)
+    professionFilterLabel:SetText("Profession Only")
+    professionFilterLabel:SetTextColor(0.9, 0.9, 0.9, 1)
+
+    local function UpdateProfessionFilterCheckboxState()
+        local enabled = batchModeEnabled and true or false
+        professionFilterCheckbox:SetEnabled(enabled)
+        if not enabled then
+            professionFilterCheckbox:SetChecked(false)
+            professionFilterEnabled = false
+            professionFilterLabel:SetTextColor(0.45, 0.45, 0.45, 1)
+        else
+            professionFilterCheckbox:SetChecked(professionFilterEnabled and true or false)
+            professionFilterLabel:SetTextColor(0.9, 0.9, 0.9, 1)
+        end
+    end
+    UpdateProfessionFilterCheckboxState()
+
 
     local scroll = CreateFrame("ScrollFrame", nil, panel)
     scroll:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -8); scroll:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -MARGIN, MARGIN)
@@ -182,10 +298,9 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
         emptyFs:Hide(); header:Show(); scroll:Show()
         local rosterCount, botsWithSpells, errorCount = 0, 0, 0
         local spellMap, orderedSpells = {}, {}
-        for _, bot in ipairs(PBAM.Bridge.Roster or {}) do
-            if bot and bot.name and bot.name ~= "" then
+        for _, botName in ipairs(batchEligibleBots or {}) do
+            if botName and botName ~= "" then
                 rosterCount = rosterCount + 1
-                local botName = bot.name
                 local trainer = trainerDataByBot[botName]
                 if not trainer or trainer.error then
                     errorCount = errorCount + 1
@@ -270,19 +385,67 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
 
     StartBatchScan = function()
         local roster = PBAM.Bridge.Roster or {}
+        local existingTrainerDataByBot = trainerDataByBot
         trainerDataByBot = {}
+        batchEligibleBots = {}
         batchScanExpected = 0
         batchScanCompleted = 0
         batchScanPending = {}
         batchScanQueue = {}
         batchScanPendingSince = {}
+
+        local trainerProfessionKey = nil
+        if professionFilterEnabled then
+            local selectedKey = PBAM.SelectedBot and string.lower(PBAM.SelectedBot) or nil
+            local selectedTrainer = selectedKey and PBAM.Bridge.Trainer and PBAM.Bridge.Trainer[selectedKey] or nil
+            trainerProfessionKey = GetTrainerProfessionKey(selectedTrainer)
+            if not trainerProfessionKey then
+                local anyTrainer = next(existingTrainerDataByBot or {})
+                trainerProfessionKey = anyTrainer and GetTrainerProfessionKey(existingTrainerDataByBot[anyTrainer]) or nil
+            end
+            if not trainerProfessionKey then
+                local r = Row(1)
+                r.name:SetText("Refresh the selected bot's trainer first.")
+                r.cost:SetText("PBAM needs a known trainer profession before Profession Only batch mode can filter the roster.")
+                r.btn:Hide()
+                content:SetHeight(68)
+                LogStatus("Profession-only batch mode needs a detected trainer profession first.", 1, 0.6, 0.4)
+                return
+            end
+
+            local missingProfessionData = {}
+            for _, bot in ipairs(roster) do
+                if bot and bot.name and bot.name ~= "" then
+                    local key = string.lower(bot.name)
+                    local hasSkills = PBAM.Bridge and PBAM.Bridge.Professions and PBAM.Bridge.Professions[key]
+                    local hasCrafting = PBAM.Bridge and PBAM.Bridge.Crafting and PBAM.Bridge.Crafting[key]
+                    if not hasSkills and not hasCrafting then table.insert(missingProfessionData, bot.name) end
+                end
+            end
+            if #missingProfessionData > 0 then
+                if PBAM.Bridge and PBAM.Bridge.RequestBotSkillsBulk then
+                    pendingBatchScanAfterSkillLoad = true
+                    PBAM.Bridge.RequestBotSkillsBulk()
+                    local r = Row(1)
+                    r.name:SetText("Loading roster profession data...")
+                    r.cost:SetText("Please wait while PBAM fetches BOT_SKILLS for profession filtering.")
+                    r.btn:Hide()
+                    content:SetHeight(60)
+                    LogStatus("Loading profession data for profession-only batch scan...", 0.95, 0.8, 0.25)
+                    return
+                end
+            end
+        end
         
         for _, bot in ipairs(roster) do
             if bot and bot.name and bot.name ~= "" then
                 local name = bot.name
-                batchScanExpected = batchScanExpected + 1
-                batchScanPending[name] = true
-                table.insert(batchScanQueue, name)
+                if (not trainerProfessionKey) or BotHasProfession(name, trainerProfessionKey) then
+                    batchScanExpected = batchScanExpected + 1
+                    batchScanPending[name] = true
+                    table.insert(batchScanQueue, name)
+                    table.insert(batchEligibleBots, name)
+                end
             end
         end
         
@@ -369,23 +532,39 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
         end
     end
     
+    professionFilterCheckbox:SetScript("OnClick", function(self)
+        if not batchModeEnabled then
+            self:SetChecked(false)
+            professionFilterEnabled = false
+            return
+        end
+        professionFilterEnabled = not not self:GetChecked()
+        if batchModeEnabled then StartBatchScan() end
+        UpdateTrainAllButtonState()
+    end)
+
     -- Batch Mode checkbox handler
     batchCheckbox:SetScript("OnClick", function(self)
         local checked = self:GetChecked()
         batchModeEnabled = checked
         
         if checked then
+            UpdateProfessionFilterCheckboxState()
             StartBatchScan()
         else
             -- Disable batch mode
             batchModeEnabled = false
             trainerDataByBot = {}
+            batchEligibleBots = {}
             batchScanQueue = {}
             batchScanPending = {}
             batchScanPendingSince = {}
+            pendingBatchScanAfterSkillLoad = false
+            professionFilterEnabled = false
             LogStatus("Batch mode disabled.", 0.75, 0.75, 0.75)
         end
         
+        UpdateProfessionFilterCheckboxState()
         UpdateTrainAllButtonState()
     end)
     
