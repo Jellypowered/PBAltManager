@@ -170,9 +170,11 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     -- Forward declarations for callback helpers/UI objects. Lua local scope starts
     -- at the declaration, so callbacks defined before these helpers need this.
     local titleFs, slotsFs, goldFs, content, statusFs
+    local playerInventoryDropdown, playerInventoryDropdownLabel
     local ClearRows, HideTargetMenu, Row, UpdateRowHighlights
     local RenderMerchantRows, UpdateBagSlots, GetBagName
     local RefreshMerchantView, RequestInventoryRefresh, RequestEquipmentRefresh
+    local RefreshPlayerInventoryDropdown, UpdatePlayerInventoryDropdownVisibility
 
     local function NormalizeBagIndex(bagValue)
         -- Bridge item locations may use raw AzerothCore container positions:
@@ -782,10 +784,21 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     local header = CreateFrame("Frame", nil, panel)
     header:SetPoint("TOPLEFT", panel, "TOPLEFT", MARGIN, -MARGIN)
     header:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -MARGIN, -MARGIN)
-    header:SetHeight(100)
+    header:SetHeight(112)
     AddBackdrop(header, 0.55)
 
     titleFs = PBAM.CreateSectionHeader(header, "Inventory", -10, 13)
+
+    playerInventoryDropdownLabel = header:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    playerInventoryDropdownLabel:SetPoint("TOPLEFT", titleFs, "BOTTOMLEFT", 4, -12)
+    playerInventoryDropdownLabel:SetText("Player Inventory")
+    playerInventoryDropdownLabel:SetTextColor(0.8, 0.8, 0.8, 1)
+
+    playerInventoryDropdown = PBAM.CreateDropdown(header, {})
+    playerInventoryDropdown:SetPoint("TOPLEFT", playerInventoryDropdownLabel, "BOTTOMLEFT", -16, 2)
+    UIDropDownMenu_SetWidth(playerInventoryDropdown, 250)
+    UIDropDownMenu_SetButtonWidth(playerInventoryDropdown, 270)
+
     local controlsFrame = CreateFrame("Frame", nil, header)
     controlsFrame:SetPoint("TOPRIGHT", titleFs.goldLine or titleFs, "BOTTOMRIGHT", 0, -4)
     controlsFrame:SetSize(292, 34)
@@ -806,7 +819,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     UpdateBagSlots()
 
     slotsFs = header:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    slotsFs:SetPoint("TOPLEFT", titleFs, "BOTTOMLEFT", 4, -10)
+    slotsFs:SetPoint("TOPLEFT", playerInventoryDropdown, "BOTTOMLEFT", 20, -8)
     slotsFs:SetPoint("RIGHT", header, "RIGHT", -320, 0)
     PBAM.WrapFontString(slotsFs, 220)
     slotsFs:SetTextColor(0.7, 0.7, 0.7, 1)
@@ -1080,6 +1093,65 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         tradeTarget = UnitShortName("player") or UnitName("player")
         SetTargetText()
         HideTargetMenu()
+    end
+
+    UpdatePlayerInventoryDropdownVisibility = function()
+        if not playerInventoryDropdown or not playerInventoryDropdownLabel then return end
+        local show = true
+        if PBAMConfig and PBAMConfig.InventoryPlayerDropdownTradeOnly then show = tradeMode and true or false end
+        if show then
+            playerInventoryDropdown:Show()
+            playerInventoryDropdownLabel:Show()
+        else
+            playerInventoryDropdown:Hide()
+            playerInventoryDropdownLabel:Hide()
+        end
+    end
+
+    RefreshPlayerInventoryDropdown = function()
+        if not playerInventoryDropdown then return end
+        local values = {}
+        local playerName = UnitName and UnitName("player") or "Player"
+        for bag = 0, 4 do
+            local bagSize = GetContainerNumSlots and tonumber(GetContainerNumSlots(bag)) or 0
+            for slot = 1, bagSize do
+                local link = GetContainerItemLink and GetContainerItemLink(bag, slot) or nil
+                if link then
+                    local info1, info2, _, info4 = GetContainerItemInfo and GetContainerItemInfo(bag, slot) or nil
+                    local icon, count, quality = nil, 0, nil
+                    if type(info1) == "table" then
+                        icon = info1.iconFileID or info1.texture
+                        count = info1.stackCount or info1.count or 0
+                        quality = info1.quality
+                    else
+                        icon = info1
+                        count = info2 or 0
+                        quality = info4
+                    end
+                    local name = (GetItemInfo and GetItemInfo(link)) or ItemName(link) or link
+                    local qty = (tonumber(count) or 0) > 1 and (" x" .. tostring(count)) or ""
+                    local prefix = (bag == 0 and "Backpack") or ("Bag " .. tostring(bag))
+                    local label = string.format("%s, Slot %d: %s%s", prefix, slot, tostring(name or link), qty)
+                    table.insert(values, {
+                        value = tostring(bag) .. ":" .. tostring(slot),
+                        label = label,
+                        dropdownLabel = (PBAM.BuildColoredItemLabel and PBAM.BuildColoredItemLabel(label, link, nil, quality)) or label,
+                        icon = icon or (GetItemIcon and GetItemIcon(link)) or nil,
+                        tooltipItemLink = link,
+                        tooltipTitle = tostring(name or link),
+                        tooltip = string.format("%s, Slot %d", prefix, slot),
+                        onSelect = function(_, entry)
+                            LogStatus(statusFs, string.format("Selected %s item: %s", tostring(playerName or "Player"), tostring(entry.label or "item")), 0.35, 0.9, 0.45)
+                        end,
+                    })
+                end
+            end
+        end
+        if #values == 0 then
+            table.insert(values, { value = "", label = "No player bag items found" })
+        end
+        playerInventoryDropdown:SetValues(values)
+        UpdatePlayerInventoryDropdownVisibility()
     end
 
     local function BotClassName(botName)
@@ -1673,6 +1745,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             LogStatus(statusFs, "Trade Mode disabled and trade canceled.", 0.75, 0.75, 0.75)
         end
         UpdateActionButtons(PBAM.SelectedBot)
+        UpdatePlayerInventoryDropdownVisibility()
     end)
 
     sellCheck:SetScript("OnClick", function(self)
@@ -1923,6 +1996,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         HideTargetMenu()
         UpdateActionButtons(botName)
         UpdateBagSlots()  -- Refresh bag slots when bot selection changes
+        RefreshPlayerInventoryDropdown()
         if not botName then emptyFs:Show(); header:Hide(); body:Hide(); return end
         emptyFs:Hide(); header:Show(); body:Show()
         if buyMode then
@@ -1965,4 +2039,6 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         end
         RenderInventoryRows(inv, bank)
     end
+    RefreshPlayerInventoryDropdown()
+    UpdatePlayerInventoryDropdownVisibility()
 end, { hideForPlayer = true })

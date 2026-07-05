@@ -19,6 +19,7 @@ if PBAMConfig.DebugMode == nil then PBAMConfig.DebugMode = false end
 if PBAMConfig.SuppressLegacySending == nil then PBAMConfig.SuppressLegacySending = false end
 if PBAMConfig.ConfirmDestructive == nil then PBAMConfig.ConfirmDestructive = true end
 if PBAMConfig.ShareQuestsToGroup == nil then PBAMConfig.ShareQuestsToGroup = true end
+if PBAMConfig.InventoryPlayerDropdownTradeOnly == nil then PBAMConfig.InventoryPlayerDropdownTradeOnly = false end
 PBAMConfig.RefreshThrottleMs = tonumber(PBAMConfig.RefreshThrottleMs) or DEFAULT_REFRESH_THROTTLE_MS
 PBAMConfig.RefreshThrottleMs = math.max(100, math.min(5000, PBAMConfig.RefreshThrottleMs))
 
@@ -225,6 +226,16 @@ function PBAM.RegisterOptionsPanel()
     throttleDesc:SetJustifyH("LEFT")
     throttleDesc:SetText("Higher values reduce refresh spam and may help client hangs. Range: 100-5000 ms.")
 
+    local inventoryDropdownOnlyTrade = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+    inventoryDropdownOnlyTrade:SetPoint("TOPLEFT", throttleDesc, "BOTTOMLEFT", -4, -16)
+    inventoryDropdownOnlyTrade:SetChecked(PBAMConfig.InventoryPlayerDropdownTradeOnly and true or false)
+    inventoryDropdownOnlyTrade.text = inventoryDropdownOnlyTrade:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    inventoryDropdownOnlyTrade.text:SetPoint("LEFT", inventoryDropdownOnlyTrade, "RIGHT", 2, 0)
+    inventoryDropdownOnlyTrade.text:SetText("Only show Inventory player dropdown in Trade Mode")
+    inventoryDropdownOnlyTrade:SetScript("OnClick", function(self)
+        PBAMConfig.InventoryPlayerDropdownTradeOnly = self:GetChecked() and true or false
+    end)
+
     panel.silentCheck = silent
     panel.debugCheck = debug
     panel.minimapCheck = minimap
@@ -240,6 +251,7 @@ function PBAM.RegisterOptionsPanel()
         suppress:SetChecked(PBAMConfig.SuppressLegacySending and true or false)
         confirm:SetChecked(PBAM.IsConfirmDestructiveEnabled())
         throttleEdit:SetText(tostring(PBAM.GetRefreshThrottleMs()))
+        inventoryDropdownOnlyTrade:SetChecked(PBAMConfig.InventoryPlayerDropdownTradeOnly and true or false)
     end)
     InterfaceOptions_AddCategory(panel)
     PBAM.OptionsPanel = panel
@@ -390,7 +402,7 @@ end
 function PBAM.IsRosterSortVisible(mode, tabName)
     mode = tostring(mode or "")
     tabName = tostring(tabName or PBAM.CurrentTab or "")
-    if mode == "profession" then return tabName == "Professions" end
+    if mode == "profession" then return tabName == "Professions" or tabName == "Trainer" end
     if mode == "bagspace" then return tabName == "Inventory" end
     return true
 end
@@ -491,7 +503,7 @@ function PBAM.RegisterCoreBridgeCallbacks()
             local key = string.lower(tostring(botName))
             PBAM.PendingRosterSkillRequests[key] = nil
         end
-        if PBAM.CurrentTab == "Professions" and PBAM.GetActiveRosterSortMode and PBAM.GetActiveRosterSortMode() == "profession" then
+        if (PBAM.CurrentTab == "Professions" or PBAM.CurrentTab == "Trainer") and PBAM.GetActiveRosterSortMode and PBAM.GetActiveRosterSortMode() == "profession" then
             PBAM.QueueRosterRefresh()
         end
     end)
@@ -515,7 +527,7 @@ function PBAM.RegisterCoreBridgeCallbacks()
 
     PBAM.Bridge.RegisterCallback("BotSkillsBulkUpdated", function()
         PBAM.PendingRosterSkillRequests = {}
-        if PBAM.CurrentTab == "Professions" and PBAM.GetActiveRosterSortMode and PBAM.GetActiveRosterSortMode() == "profession" then
+        if (PBAM.CurrentTab == "Professions" or PBAM.CurrentTab == "Trainer") and PBAM.GetActiveRosterSortMode and PBAM.GetActiveRosterSortMode() == "profession" then
             PBAM.QueueRosterRefresh()
         end
     end)
@@ -910,9 +922,9 @@ function PBAM.CreateMainWindow()
     botListFrame:SetScript("OnMouseWheel", function(self, delta)
         local cur = self:GetVerticalScroll()
         local maxScroll = self:GetVerticalScrollRange()
-        -- Increase scroll speed when in Professions tab with profession sort (more rows to scroll)
+        -- Increase scroll speed when in Professions/Trainer tab with profession sort (more rows to scroll)
         local scrollMult = 1.0
-        if PBAM.CurrentTab == "Professions" and PBAM.GetActiveRosterSortMode and PBAM.GetActiveRosterSortMode() == "profession" then
+        if (PBAM.CurrentTab == "Professions" or PBAM.CurrentTab == "Trainer") and PBAM.GetActiveRosterSortMode and PBAM.GetActiveRosterSortMode() == "profession" then
             scrollMult = 3.0  -- 3x faster scrolling
         end
         self:SetVerticalScroll(math.max(0, math.min(maxScroll, cur - delta * 20 * scrollMult)))
@@ -1321,7 +1333,7 @@ function PBAM.RefreshRosterDisplay()
 
         if not skills and not crafting then
             -- Skip individual requests if bulk is in progress to avoid duplicates
-            if sortMode == "profession" and PBAM.CurrentTab == "Professions" and PBAM.Bridge and PBAM.Bridge.RequestBotSkills and (not PBAM.Bridge.BotSkillsBulk or PBAM.Bridge.BotSkillsBulk.loading == false) then
+            if sortMode == "profession" and (PBAM.CurrentTab == "Professions" or PBAM.CurrentTab == "Trainer") and PBAM.Bridge and PBAM.Bridge.RequestBotSkills and (not PBAM.Bridge.BotSkillsBulk or PBAM.Bridge.BotSkillsBulk.loading == false) then
                 table.insert(missingSkillNames, entry.name)
             end
             return {}, {}
@@ -1461,7 +1473,7 @@ function PBAM.RefreshRosterDisplay()
                 end
             end
         end
-    elseif sortMode == "profession" and PBAM.CurrentTab == "Professions" and PBAM.Bridge then
+    elseif sortMode == "profession" and (PBAM.CurrentTab == "Professions" or PBAM.CurrentTab == "Trainer") and PBAM.Bridge then
         if PBAM.Bridge.RequestBotSkillsBulk and #missingSkillNames > 0 and (not PBAM._LastBotSkillsBulkRequest or (now - PBAM._LastBotSkillsBulkRequest) >= ROSTER_SORT_REQUEST_TTL) then
             PBAM._LastBotSkillsBulkRequest = now
             PBAM.Bridge.RequestBotSkillsBulk()

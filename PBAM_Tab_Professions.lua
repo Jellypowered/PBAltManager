@@ -372,12 +372,16 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
             for idx, item in ipairs(source or {}) do
                 local value = tostring(idx)
                 local prefix = targetMode == "EQUIP" and ((EQUIP_SLOT_NAMES[(tonumber(item.equipSlot) or 0) + 1]) or ("Slot " .. tostring(item.equipSlot or item.slot or 0))) .. ": " or ("Bag " .. tostring(item.bag or 0) .. ", Slot " .. tostring(item.slot or 0) .. ": ")
+                local label = TargetItemLabel(item, prefix)
                 table.insert(values, {
                     value = value,
-                    label = TargetItemLabel(item, prefix),
+                    label = label,
+                    dropdownLabel = PBAM.BuildColoredItemLabel and PBAM.BuildColoredItemLabel(label, item.itemLink, item.itemId, item.quality) or label,
                     icon = (item.itemId and item.itemId > 0 and GetItemIcon and GetItemIcon(item.itemId)) or nil,
                     tooltipTitle = TargetItemLabel(item),
                     tooltip = "itemId=" .. tostring(item.itemId or 0) .. "\n" .. (targetMode == "EQUIP" and ("Equipped slot " .. tostring(item.equipSlot or item.slot or 0)) or ("Bag " .. tostring(item.bag or 0) .. ", Slot " .. tostring(item.slot or 0))),
+                    tooltipItemLink = item.itemLink,
+                    tooltipItemId = item.itemId,
                     onSelect = function(_, entry)
                         selectedTargetItem = entry.item
                         if statusText then statusText:SetText("Target item selected: " .. TargetItemLabel(entry.item)) end
@@ -390,17 +394,27 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
             local link = TradePlayerItemLink()
             local label = "Trade not-traded slot"
             if link then label = "Trade: " .. tostring((GetItemInfo and GetItemInfo(link)) or CleanItemText(link)) end
-            table.insert(values, { value = "", label = label, icon = (link and GetItemIcon and GetItemIcon(link)) or nil, tooltip = "Put your target item in the trade window's not-traded slot." })
+            table.insert(values, {
+                value = "",
+                label = label,
+                dropdownLabel = (link and PBAM.BuildColoredItemLabel and PBAM.BuildColoredItemLabel(label, link)) or label,
+                icon = (link and GetItemIcon and GetItemIcon(link)) or nil,
+                tooltip = "Put your target item in the trade window's not-traded slot.",
+                tooltipItemLink = link,
+            })
             for slot = 1, 19 do
                 local equipLink = GetInventoryItemLink and GetInventoryItemLink("player", slot) or nil
                 if equipLink then
                     local name = (GetItemInfo and GetItemInfo(equipLink)) or CleanItemText(equipLink)
+                    local label = "Your " .. tostring(EQUIP_SLOT_NAMES[slot] or ("Slot " .. slot)) .. ": " .. tostring(name or equipLink)
                     table.insert(values, {
                         value = "PLAYER_EQUIP_" .. tostring(slot),
-                        label = "Your " .. tostring(EQUIP_SLOT_NAMES[slot] or ("Slot " .. slot)) .. ": " .. tostring(name or equipLink),
+                        label = label,
+                        dropdownLabel = (PBAM.BuildColoredItemLabel and PBAM.BuildColoredItemLabel(label, equipLink)) or label,
                         icon = (GetInventoryItemTexture and GetInventoryItemTexture("player", slot)) or nil,
                         tooltipTitle = tostring(name or equipLink),
                         tooltip = "Select to place this equipped item into the trade not-traded slot.",
+                        tooltipItemLink = equipLink,
                         onSelect = function(_, entry)
                             selectedTargetItem = nil
                             PlacePlayerEquipInTrade(entry.slot)
