@@ -293,6 +293,13 @@ function Bridge.BagMove(bot, sourceBagIndex, targetBagIndex)
     return t
 end
 
+function Bridge.ItemUse(bot, itemId, bag, slot)
+    local t = makeToken("itemuse")
+    Bridge.NativeActions[t] = { type = "ITEM_USE", botName = bot, itemId = tonumber(itemId) or 0, bag = tonumber(bag) or 0, slot = tonumber(slot) or 0 }
+    Bridge.Send("RUN", "ITEM_USE~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(itemId) or 0) .. "~" .. (tonumber(bag) or 0) .. "~" .. (tonumber(slot) or 0))
+    return t
+end
+
 function Bridge.ItemTrade(bot, itemId, targetName, count, bag, slot)
     local t = makeToken("trade")
     local payload = "ITEM_TRADE~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(itemId) or 0) .. "~" .. urlEncode(targetName or "") .. "~" .. (tonumber(count) or 0)
@@ -412,7 +419,7 @@ function Bridge.OnAddonMessage(prefix, message, channel, sender)
         Bridge.ApplyCraftRecipeResult(payload, opcode)
     elseif opcode == "INVENTORY_ITEM_ACTION" then
         Bridge.ApplyInventoryItemActionPayload(payload)
-    elseif opcode == "CAST_SPELL" or opcode == "QUEST_ABANDON" or opcode == "QUEST_SHARE" or opcode == "ITEM_EQUIP" or opcode == "BAG_MOVE" or opcode == "ITEM_TRADE" or opcode == "TALENT_APPLY" then
+    elseif opcode == "CAST_SPELL" or opcode == "QUEST_ABANDON" or opcode == "QUEST_SHARE" or opcode == "ITEM_EQUIP" or opcode == "ITEM_USE" or opcode == "BAG_MOVE" or opcode == "ITEM_TRADE" or opcode == "TALENT_APPLY" then
         Bridge.ApplyNativeActionResult(opcode, payload)
     elseif opcode == "TRAINER_LEARN" then
         Bridge.ApplyTrainerLearnResult(payload)

@@ -50,6 +50,15 @@ local function DifficultyColor(difficulty)
     return "|cffffffff"
 end
 
+local function DifficultyChanceLabel(difficulty)
+    difficulty = string.lower(tostring(difficulty or ""))
+    if difficulty == "orange" then return DifficultyColor(difficulty) .. "[100% Chance]|r" end
+    if difficulty == "yellow" then return DifficultyColor(difficulty) .. "[75% Chance]|r" end
+    if difficulty == "green" then return DifficultyColor(difficulty) .. "[25% Chance]|r" end
+    if difficulty == "gray" or difficulty == "grey" then return DifficultyColor(difficulty) .. "[0% Chance]|r" end
+    return "|cffaaaaaa[?% Chance]|r"
+end
+
 local function CraftReason(reason)
     reason = tostring(reason or "")
     local map = {
@@ -192,6 +201,7 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
     local RefreshTradeTargetStatus
     local OpenTradeForSelectedBot
     local RequestTargetInventoryRefresh
+    local RequestProfessionSkillRefresh
     local craftQueue = { active=false, remaining=0, botName=nil, skillId=0, spellId=0, itemId=0, recipeName="", waiting=false }
     local queueTimer = CreateFrame("Frame", nil, panel)
     queueTimer:Hide()
@@ -204,6 +214,17 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
         statusText:SetText("Craft All: crafting " .. tostring(craftQueue.recipeName) .. " (" .. tostring(craftQueue.remaining) .. " left)...")
         PBAM.Bridge.CraftRecipe(craftQueue.botName, craftQueue.skillId, craftQueue.spellId, craftQueue.itemId)
     end)
+
+    RequestProfessionSkillRefresh = function(botName, skillId)
+        if not botName or botName ~= PBAM.SelectedBot then return end
+        if PBAM.Bridge.RequestBotSkills then PBAM.Bridge.RequestBotSkills(botName) end
+        if PBAM.Bridge.Send then PBAM.Bridge.Send("GET", "PROFESSION~" .. botName) end
+        if skillId and tonumber(skillId) and PBAM.Bridge.RequestProfessionRecipes then
+            PBAM.After(0.35, function()
+                if PBAM.SelectedBot == botName then PBAM.Bridge.RequestProfessionRecipes(botName, skillId) end
+            end)
+        end
+    end
 
     local function refresh(botName)
         if botName == PBAM.SelectedBot and PBAM.CurrentTab == "Professions" and panel.OnBotSelect then panel.OnBotSelect(botName) end
@@ -222,6 +243,7 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
                 craftQueue.waiting = false
                 PBAM.Bridge.RequestProfessionRecipes(result.botName, result.skillId)
                 if RequestTargetInventoryRefresh then RequestTargetInventoryRefresh(result.botName) end
+                if RequestProfessionSkillRefresh then RequestProfessionSkillRefresh(result.botName, result.skillId) end
                 if craftQueue.remaining > 0 then
                     statusText:SetText("|cff40ff40Craft queued. Waiting for cast to finish; " .. tostring(craftQueue.remaining) .. " left.|r")
                     queueTimer.elapsed = 0; queueTimer:Show()
@@ -234,11 +256,13 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
                 statusText:SetText("|cffff6060Craft All stopped: " .. reasonText .. "|r")
                 PBAM.Bridge.RequestProfessionRecipes(result.botName, result.skillId)
                 if RequestTargetInventoryRefresh then RequestTargetInventoryRefresh(result.botName) end
+                if RequestProfessionSkillRefresh then RequestProfessionSkillRefresh(result.botName, result.skillId) end
             else
                 statusText:SetText((ok and "|cff40ff40" or "|cffff6060") .. reasonText .. "|r")
                 if ok then
                     PBAM.Bridge.RequestProfessionRecipes(result.botName, result.skillId)
                     if RequestTargetInventoryRefresh then RequestTargetInventoryRefresh(result.botName) end
+                    if RequestProfessionSkillRefresh then RequestProfessionSkillRefresh(result.botName, result.skillId) end
                 end
             end
         end
@@ -249,6 +273,7 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
             if result.result == "OK" and selectedSkillId then
                 PBAM.Bridge.RequestProfessionRecipes(result.botName, selectedSkillId)
                 if RequestTargetInventoryRefresh then RequestTargetInventoryRefresh(result.botName) end
+                if RequestProfessionSkillRefresh then RequestProfessionSkillRefresh(result.botName, selectedSkillId) end
             end
         end
     end)
@@ -593,7 +618,7 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
             local craftable = tonumber(rec.craftable) or 0
             local special = SpecialRecipe(rec)
             local nameColor = (special and special.forceWhiteName) and "|cffffffff" or DifficultyColor(rec.difficulty)
-            r.name:SetText(nameColor .. RecipeName(rec) .. "|r")
+            r.name:SetText(nameColor .. RecipeName(rec) .. "|r " .. DifficultyChanceLabel(rec.difficulty))
             local hasTarget = selectedTargetItem and selectedTargetItem.itemId and (targetMode == "BAG" or targetMode == "EQUIP" or targetMode == "TRADE")
             local requiresTarget = special and special.requiresTarget
             local requiresBagTarget = special and special.requiresBagTarget
@@ -612,9 +637,9 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
                 else
                     targetHint = "Target: " .. TargetItemLabel(selectedTargetItem)
                 end
-                r.info:SetText("|cff888888" .. tostring(targetHint) .. "  spell " .. tostring(rec.spellId) .. (special and special.label and ("  " .. special.label) or "") .. "|r")
+                r.info:SetText("|cff888888" .. tostring(targetHint) .. (special and special.label and ("  " .. special.label) or "") .. "|r")
             else
-                r.info:SetText("|cff888888Can craft: " .. tostring(craftable) .. "  spell " .. tostring(rec.spellId) .. (special and special.label and ("  " .. special.label) or "") .. "|r")
+                r.info:SetText("|cff888888Can craft: " .. tostring(craftable) .. (special and special.label and ("  " .. special.label) or "") .. "|r")
             end
             local mats = ParseMaterials(rec.materials)
             for n,b in ipairs(r.matIcons) do

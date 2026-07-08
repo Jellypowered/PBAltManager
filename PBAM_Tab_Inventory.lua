@@ -160,6 +160,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     local storageMode = nil
     local buyMode = false
     local equipMode = false
+    local useMode = false
     local destroyMode = false
     local tradeMode = false
     local sellMode = false
@@ -172,6 +173,8 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     local hiddenPlayerTradeItems = {}
     local tradeTarget = nil
     local tradeInitiatedAt = 0  -- timestamp when InitiateTrade was called
+    local pendingBatchUse = nil
+    local ProcessNextBatchUseBot
 
     local function PlayerTradeItemKey(bag, slot)
         return tostring(tonumber(bag) or -1) .. ":" .. tostring(tonumber(slot) or -1)
@@ -851,7 +854,14 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     -- Re-triggering creates a cascade (callback → OnBotSelect → RequestInventoryRefresh)
     -- that overlaps with the initial request cycle, causing token collisions and lost data.
     PBAM.Bridge.RegisterCallback("InventoryUpdated", function(botName)  
-        if botName ~= PBAM.SelectedBot or PBAM.CurrentTab ~= "Inventory" then return end
+        if PBAM.CurrentTab ~= "Inventory" then return end
+        if pendingBatchUse and pendingBatchUse.waitingFor and botName == pendingBatchUse.waitingFor then
+            pendingBatchUse.waitingFor = nil
+            pendingBatchUse.inventoryReadyFor = botName
+            pendingBatchUse.resumeCurrent = true
+            After(0.05, ProcessNextBatchUseBot)
+        end
+        if botName ~= PBAM.SelectedBot then return end
         local key = string.lower(botName)
         local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
         local bank = PBAM.Bridge.Bank and PBAM.Bridge.Bank[key]
@@ -927,15 +937,22 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     end)
     PBAM.Bridge.RegisterCallback("NativeActionResult", function(result)
         if not result or PBAM.CurrentTab ~= "Inventory" then return end
-        if result.type ~= "ITEM_EQUIP" and result.type ~= "ITEM_TRADE" and result.type ~= "BAG_MOVE" then return end
-        if result.botName ~= PBAM.SelectedBot then return end
+        if result.type ~= "ITEM_EQUIP" and result.type ~= "ITEM_USE" and result.type ~= "ITEM_TRADE" and result.type ~= "BAG_MOVE" then return end
         local ok = result.result == "OK"
-        local label = result.type == "ITEM_TRADE" and "Trade" or (result.type == "BAG_MOVE" and "Bag move" or "Equip")
+        local selected = result.botName == PBAM.SelectedBot
+        local label = result.type == "ITEM_TRADE" and "Trade" or (result.type == "BAG_MOVE" and "Bag move" or (result.type == "ITEM_USE" and "Use" or "Equip"))
         local extra = result.type == "ITEM_TRADE" and (" moved=" .. tostring(result.moved or 0)) or ""
-        LogStatus(panel.StatusText, label .. (ok and " complete" or " failed") .. extra .. (ok and "" or (": " .. tostring(result.reason or "unknown"))), ok and 0.35 or 1, ok and 0.9 or 0.35, ok and 0.45 or 0.25)
-        if ok and PBAM.SelectedBot then
-            After(0.75, function() PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end)
-            if (result.type == "ITEM_EQUIP" or result.type == "BAG_MOVE") and PBAM.RefreshEquipmentTab then After(0.75, function() PBAM.RefreshEquipmentTab(PBAM.SelectedBot, true) end) end
+        if pendingBatchUse and result.type == "ITEM_USE" and result.botName and pendingBatchUse.awaitingResultFor == result.botName then
+            pendingBatchUse.awaitingResultFor = nil
+            local batchMsg = string.format("Batch Use %d/%d: %s %s%s", pendingBatchUse.index or 0, pendingBatchUse.total or 0, tostring(result.botName), ok and "used item" or "use failed", ok and "" or (" (" .. tostring(result.reason or "unknown") .. ")"))
+            LogStatus(panel.StatusText, batchMsg, ok and 0.35 or 1, ok and 0.9 or 0.35, ok and 0.45 or 0.25)
+            After(0.85, ProcessNextBatchUseBot)
+        elseif selected then
+            LogStatus(panel.StatusText, label .. (ok and " complete" or " failed") .. extra .. (ok and "" or (": " .. tostring(result.reason or "unknown"))), ok and 0.35 or 1, ok and 0.9 or 0.35, ok and 0.45 or 0.25)
+        end
+        if ok and result.botName and PBAM.Bridge and PBAM.Bridge.RequestInventory then
+            After(0.75, function() PBAM.Bridge.RequestInventory(result.botName) end)
+            if selected and (result.type == "ITEM_EQUIP" or result.type == "BAG_MOVE") and PBAM.RefreshEquipmentTab then After(0.75, function() PBAM.RefreshEquipmentTab(result.botName, true) end) end
         end
     end)
     local tradeEventFrame = CreateFrame("Frame")
@@ -1102,7 +1119,8 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     tradeCheck = CheckButtonLeft("Trade Mode", -48)
     local buyCheck = CheckButtonRight("Buy Mode", -48)
     local sellCheck = CheckButtonLeft("Sell Mode", -72)
-    local sellBatch = CheckButtonRight("Batch Mode", -72)
+    local useCheck = CheckButtonRight("Use Mode", -72)
+    local sellBatch = CheckButtonRight("Batch Mode", -96)
 
     local tradeTargetLabel = actionPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     tradeTargetLabel:SetPoint("TOPLEFT", actionPanel, "TOPLEFT", 18, -124)
@@ -1368,6 +1386,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         if storageMode then
             buyMode = false; buyCheck:SetChecked(false)
             equipMode = false; equipCheck:SetChecked(false)
+            useMode = false; useCheck:SetChecked(false)
             tradeMode = false; tradeCheck:SetChecked(false)
             sellMode = false; sellCheck:SetChecked(false)
             destroyMode = false; destroyCheck:SetChecked(false)
@@ -1424,11 +1443,20 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         end)
         sellCheck:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
+        useCheck:SetEnabled(hasBot and not isPlayer)
+        useCheck:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Use Mode", 1, 0.82, 0.22, true)
+            GameTooltip:AddLine("Click usable items such as recipes or consumables to use them on the selected bot.", 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end)
+        useCheck:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
         sellBatch:SetEnabled(hasBot and not isPlayer)
         sellBatch:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:SetText("Batch Mode", 1, 0.82, 0.22, true)
-            GameTooltip:AddLine("Sell entire stacks instead of single items", 0.8, 0.8, 0.8, true)
+            GameTooltip:AddLine("For Sell/Buy/Use actions, apply the action to the whole roster where supported.", 0.8, 0.8, 0.8, true)
             GameTooltip:Show()
         end)
         sellBatch:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1625,6 +1653,16 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         return total
     end
 
+    local function FindFirstInventoryItemLocation(botName, itemId)
+        local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[string.lower(tostring(botName or ""))]
+        for _, item in ipairs((inv and inv.itemLocations) or {}) do
+            if tonumber(item.itemId) == tonumber(itemId) and item.bag ~= nil and item.slot ~= nil then
+                return item
+            end
+        end
+        return nil
+    end
+
     local function BridgeRangedItem(botName)
         local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[string.lower(tostring(botName or ""))]
         for _, item in ipairs((inv and inv.equipmentLocations) or {}) do
@@ -1762,6 +1800,17 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                             end)
                         end
                     end
+                elseif action.kind == "itemuse" then
+                    if PBAM.Bridge and PBAM.Bridge.ItemUse then
+                        PBAM.Bridge.ItemUse(entry.name, action.itemId, action.bag, action.slot)
+                        if PBAM.Bridge.RequestInventory then
+                            After(1.25, function()
+                                local key = string.lower(entry.name)
+                                local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
+                                if not (inv and inv.loading) then PBAM.Bridge.RequestInventory(entry.name) end
+                            end)
+                        end
+                    end
                 end
                 processed = processed + 1
                 UpdateCountdown()
@@ -1847,6 +1896,148 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         SendChatMessage(command, channel)
         sellBatch:SetChecked(false)
         LogStatus(statusFs, "Sent batch command '" .. command .. "' to " .. channel .. ".", 0.35, 0.9, 0.45)
+    end
+
+    ProcessNextBatchUseBot = function()
+        local batch = pendingBatchUse
+        if not batch or batch.done then return end
+        if not useMode then
+            pendingBatchUse = nil
+            isBatchSelling = false
+            LogStatus(statusFs, "Batch Use canceled: Use Mode is no longer enabled.", 1, 0.35, 0.25)
+            return
+        end
+        if batch.resumeCurrent then
+            batch.resumeCurrent = false
+        else
+            batch.index = (batch.index or 0) + 1
+        end
+        local botName = batch.rosterNames and batch.rosterNames[batch.index]
+        if not botName then
+            batch.done = true
+            isBatchSelling = false
+            sellBatch:SetChecked(false)
+            LogStatus(statusFs, string.format("Batch Use complete. Sent=%d, skipped=%d, missing=%d.", batch.sent or 0, batch.skipped or 0, batch.missing or 0), 0.6, 1, 0.6)
+            pendingBatchUse = nil
+            return
+        end
+
+        local key = string.lower(tostring(botName or ""))
+        local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
+        if not batch.inventoryReadyFor or batch.inventoryReadyFor ~= botName then
+            batch.waitingFor = botName
+            batch.waitStartedAt = GetTime and GetTime() or 0
+            batch.inventoryReadyFor = nil
+            if PBAM.Bridge and PBAM.Bridge.Inventory then
+                PBAM.Bridge.Inventory[key] = {
+                    name = botName,
+                    items = {},
+                    itemLocations = {},
+                    equipmentLocations = {},
+                    bags = {},
+                    goldCopper = 0,
+                    bagUsed = 0,
+                    bagTotal = 0,
+                    loading = true,
+                }
+            end
+            if PBAM.Bridge and PBAM.Bridge.RequestInventory then PBAM.Bridge.RequestInventory(botName) end
+            LogStatus(statusFs, string.format("Batch Use %d/%d: requesting %s inventory...", batch.index, batch.total or 0, botName), 0.95, 0.8, 0.25)
+            After(0.75, function()
+                if not pendingBatchUse or pendingBatchUse ~= batch or batch.done or batch.waitingFor ~= botName then return end
+                local current = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
+                if current and not current.loading then
+                    batch.waitingFor = nil
+                    batch.inventoryReadyFor = botName
+                    batch.resumeCurrent = true
+                    ProcessNextBatchUseBot()
+                elseif (GetTime and GetTime() or 0) - (batch.waitStartedAt or 0) >= 5.0 then
+                    batch.waitingFor = nil
+                    batch.inventoryReadyFor = nil
+                    batch.missing = (batch.missing or 0) + 1
+                    LogStatus(statusFs, string.format("Batch Use %d/%d: %s inventory did not load in time, skipping.", batch.index, batch.total or 0, botName), 1, 0.7, 0.25)
+                    After(0.10, ProcessNextBatchUseBot)
+                else
+                    After(0.75, function()
+                        if pendingBatchUse == batch and not batch.done and batch.waitingFor == botName and PBAM.Bridge and PBAM.Bridge.RequestInventory then
+                            PBAM.Bridge.RequestInventory(botName)
+                        end
+                        ProcessNextBatchUseBot()
+                    end)
+                end
+            end)
+            return
+        end
+
+        batch.inventoryReadyFor = nil
+        local match = FindFirstInventoryItemLocation(botName, batch.itemId)
+        if not match then
+            batch.skipped = (batch.skipped or 0) + 1
+            LogStatus(statusFs, string.format("Batch Use %d/%d: %s does not have item %d.", batch.index, batch.total or 0, botName, batch.itemId or 0), 0.75, 0.75, 0.75)
+            After(0.10, ProcessNextBatchUseBot)
+            return
+        end
+
+        if PBAM.Bridge and PBAM.Bridge.ItemUse and PBAM.Bridge.ItemUse(botName, batch.itemId, match.bag, match.slot) then
+            batch.sent = (batch.sent or 0) + 1
+            batch.awaitingResultFor = botName
+            batch.awaitingResultAt = GetTime and GetTime() or 0
+            LogStatus(statusFs, string.format("Batch Use %d/%d: using %s on %s...", batch.index, batch.total or 0, tostring(batch.itemName or batch.itemId), botName), 0.35, 0.9, 0.45)
+            After(2.50, function()
+                if not pendingBatchUse or pendingBatchUse ~= batch or batch.done or batch.awaitingResultFor ~= botName then return end
+                batch.awaitingResultFor = nil
+                LogStatus(statusFs, string.format("Batch Use %d/%d: no ITEM_USE result from %s, continuing.", batch.index, batch.total or 0, botName), 0.95, 0.8, 0.25)
+                ProcessNextBatchUseBot()
+            end)
+        else
+            batch.skipped = (batch.skipped or 0) + 1
+            LogStatus(statusFs, string.format("Batch Use %d/%d: could not send use request for %s.", batch.index, batch.total or 0, botName), 1, 0.35, 0.25)
+            After(0.10, ProcessNextBatchUseBot)
+        end
+    end
+
+    local function StartBatchUse(item)
+        if not useMode then
+            LogStatus(statusFs, "Enable Use Mode first.", 1, 0.7, 0.25)
+            return
+        end
+        if isBatchSelling or pendingBatchUse then return end
+        local itemId = ItemId(item)
+        if itemId <= 0 then
+            LogStatus(statusFs, "This item cannot be batch-used: missing item id.", 1, 0.35, 0.25)
+            return
+        end
+        local rosterNames = {}
+        for _, bot in ipairs(PBAM.Bridge.Roster or {}) do
+            local botName = bot and bot.name or nil
+            if botName and botName ~= "" then table.insert(rosterNames, botName) end
+        end
+        if #rosterNames == 0 then
+            LogStatus(statusFs, "No roster bots available for Batch Use.", 1, 0.6, 0.4)
+            return
+        end
+        table.sort(rosterNames, function(a, b) return string.lower(a) < string.lower(b) end)
+        pendingBatchUse = {
+            item = item,
+            itemId = itemId,
+            itemName = ItemName(item),
+            rosterNames = rosterNames,
+            total = #rosterNames,
+            index = 0,
+            sent = 0,
+            skipped = 0,
+            missing = 0,
+            waitingFor = nil,
+            waitStartedAt = 0,
+            inventoryReadyFor = nil,
+            awaitingResultFor = nil,
+            awaitingResultAt = 0,
+            resumeCurrent = false,
+            done = false,
+        }
+        isBatchSelling = true
+        LogStatus(statusFs, string.format("Batch Use started for %s across %d bot(s).", tostring(ItemName(item)), #rosterNames), 0.35, 0.9, 0.45)
+        After(0.05, ProcessNextBatchUseBot)
     end
 
     local function SendLegacyInventoryCommand(command, botName, item, suffix)
@@ -2036,6 +2227,23 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             return
         end
 
+        if useMode then
+            local itemId = ItemId(item)
+            if itemId <= 0 or item.bag == nil or item.slot == nil then
+                LogStatus(statusFs, "This item cannot be used from the current snapshot.", 1, 0.35, 0.25)
+                return
+            end
+            if sellBatch:GetChecked() then
+                StartBatchUse(item)
+            elseif PBAM.Bridge and PBAM.Bridge.ItemUse and PBAM.Bridge.ItemUse(PBAM.SelectedBot, itemId, item.bag, item.slot) then
+                LogStatus(statusFs, "Use request sent for " .. ItemName(item) .. ".", 0.35, 0.9, 0.45)
+                RequestInventoryRefresh()
+            else
+                LogStatus(statusFs, "Could not send use request for " .. ItemName(item) .. ".", 1, 0.35, 0.25)
+            end
+            return
+        end
+
         if equipMode then
             local slotHint = IsEquippableBagItem(item) and "BAG" or (button == "RightButton" and "OFF_HAND" or "AUTO")
             if PBAM.Bridge and PBAM.Bridge.ItemEquip and PBAM.Bridge.ItemEquip(PBAM.SelectedBot, ItemId(item), slotHint, item.bag, item.slot) then
@@ -2119,7 +2327,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             return
         end
 
-        LogStatus(statusFs, "No action mode enabled. Enable Equip Mode, Trade Mode, Destroy Mode, or Sell Mode first.", 0.95, 0.8, 0.25)
+        LogStatus(statusFs, "No action mode enabled. Enable Use, Equip, Trade, Destroy, or Sell Mode first.", 0.95, 0.8, 0.25)
     end
 
     ClearRows = function()
@@ -2163,6 +2371,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                         GameTooltip:AddLine("Drag this bag onto an equipped bag slot above to place it there.", 0.95, 0.8, 0.25, true)
                     end
                 end
+                if useMode then GameTooltip:AddLine("Use Mode: click to use/read this item on the selected bot.", 0.35, 0.9, 0.45, true) end
                 if tradeMode then GameTooltip:AddLine("Trade Mode: click to insert item into open trade ('t' + 'give' commands)", 0.95, 0.8, 0.25, true) end
                 if buyMode and self.merchantItem then GameTooltip:AddLine("Buy Mode: left-click buys 1, right-click buys one merchant stack.", 0.35, 0.9, 0.45, true) end
             end
@@ -2177,6 +2386,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         if equipMode then
             buyMode = false; buyCheck:SetChecked(false)
             SetStorageMode(nil)
+            useMode = false; useCheck:SetChecked(false)
             destroyCheck:SetChecked(false)
             sellCheck:SetChecked(false)
             sellBatch:SetChecked(false)
@@ -2194,6 +2404,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         if tradeMode then
             buyMode = false; buyCheck:SetChecked(false)
             SetStorageMode(nil)
+            useMode = false; useCheck:SetChecked(false)
             destroyCheck:SetChecked(false)
             sellCheck:SetChecked(false)
             sellBatch:SetChecked(false)
@@ -2219,6 +2430,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         if sellMode then
             buyMode = false; buyCheck:SetChecked(false)
             SetStorageMode(nil)
+            useMode = false; useCheck:SetChecked(false)
             equipCheck:SetChecked(false)
             tradeCheck:SetChecked(false)
             destroyCheck:SetChecked(false)
@@ -2342,19 +2554,39 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     end)
 
     sellBatch:SetScript("OnClick", function(self)
-        if self:GetChecked() and not (sellMode or buyMode) then
+        if self:GetChecked() and not (sellMode or buyMode or useMode) then
             self:SetChecked(false)
-            LogStatus(statusFs, "Batch Mode requires Sell Mode or Buy Mode to be enabled.", 1, 0.7, 0.25)
+            LogStatus(statusFs, "Batch Mode requires Sell Mode, Buy Mode, or Use Mode to be enabled.", 1, 0.7, 0.25)
         elseif self:GetChecked() then
-            LogStatus(statusFs, "Batch Mode enabled. Sell buttons, Buy Ammo, and Repair All will process the whole roster.", 0.95, 0.8, 0.25)
+            LogStatus(statusFs, "Batch Mode enabled. Sell buttons, Buy Ammo, Repair All, and Use Mode clicks will process the whole roster where supported.", 0.95, 0.8, 0.25)
         else
             LogStatus(statusFs, "Batch Mode disabled.", 0.75, 0.75, 0.75)
         end
     end)
+
+    useCheck:SetScript("OnClick", function(self)
+        useMode = self:GetChecked() and true or false
+        if useMode then
+            buyMode = false; buyCheck:SetChecked(false)
+            SetStorageMode(nil)
+            equipMode = false; equipCheck:SetChecked(false)
+            tradeMode = false; tradeCheck:SetChecked(false); HideTargetMenu()
+            sellMode = false; sellCheck:SetChecked(false)
+            destroyMode = false; destroyCheck:SetChecked(false)
+            sellBatch:SetChecked(false)
+            if CancelTrade then CancelTrade() end
+            LogStatus(statusFs, "Use Mode enabled. Click usable items such as recipes to use them on the selected bot, or on the whole roster when Batch Mode is checked.", 0.35, 0.9, 0.45)
+        else
+            LogStatus(statusFs, "Use Mode disabled.", 0.75, 0.75, 0.75)
+        end
+        UpdateActionButtons(PBAM.SelectedBot)
+    end)
+
     buyCheck:SetScript("OnClick", function(self)
         buyMode = self:GetChecked() and true or false
         if buyMode then
             equipMode = false; equipCheck:SetChecked(false)
+            useMode = false; useCheck:SetChecked(false)
             tradeMode = false; tradeCheck:SetChecked(false)
             sellMode = false; sellCheck:SetChecked(false)
             destroyMode = false; destroyCheck:SetChecked(false)
@@ -2387,6 +2619,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             -- Disable all other mode checkboxes when Destroy Mode is enabled
             buyMode = false; buyCheck:SetChecked(false)
             SetStorageMode(nil)
+            useMode = false; useCheck:SetChecked(false)
             equipCheck:SetChecked(false)
             tradeCheck:SetChecked(false)
             sellCheck:SetChecked(false)
@@ -2508,6 +2741,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             SetStorageMode(nil)
             buyMode = false; buyCheck:SetChecked(false)
             equipMode = false; equipCheck:SetChecked(false)
+            useMode = false; useCheck:SetChecked(false)
             tradeMode = false; tradeCheck:SetChecked(false)
             sellMode = false; sellCheck:SetChecked(false)
             destroyMode = false; destroyCheck:SetChecked(false)

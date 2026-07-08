@@ -13,7 +13,7 @@ It brings the most useful day-to-day bot management tools into one window with a
 | Feature | main Branch | Extended Branch (this) |
 |---------|-------------|------------------------|
 | **Protocol** | `MBOT` prefix | `PBAM` prefix |
-| **Native Bridge Endpoints** | ❌ None | ✅ 8 endpoints |
+| **Native Bridge Endpoints** | ❌ None | ✅ 9 endpoints |
 | **Inventory Bag Filtering** | ❌ No | ✅ With equipped bag slot UI |
 | **Targeted Crafting** | ❌ Manual only | ✅ Targeted craft modes |
 | **Trade Mode** | ✅ Basic (legacy) | ✅ Enhanced (native bridge + player picker helper) |
@@ -35,7 +35,7 @@ It brings the most useful day-to-day bot management tools into one window with a
 
 - Roster overview for bots and the logged-in player (with roster sort options, including profession sorting on Inventory/Professions/Trainer and free bag space on Inventory)
 - Talents viewer/planner with native bridge talent apply (including custom builds and reset via 0-0-0)
-- Inventory view with exact item locations, equipped bag slot bar, bag filtering, local player inventory support, and bank/guild bank transfer overlays
+- Inventory view with exact item locations, equipped bag slot bar, bag filtering, bot item Use Mode, local player inventory support, and bank/guild bank transfer overlays
 - Bank and guild bank overlays (when banker/guild bank is nearby) with bridge-backed deposit and withdrawal actions
 - Professions and recipe browser with targeted craft modes (normal, trade slot, bag item, equipped item) and rarity-colored scrollable item pickers
 - Spells tab with native bridge spell casting and detailed failure reason mapping
@@ -92,6 +92,7 @@ It brings the most useful day-to-day bot management tools into one window with a
 | `QUEST_ABANDON` | Abandon quests directly via bridge |
 | `QUEST_SHARE` | Share quests to other players via bridge |
 | `ITEM_EQUIP` | Equip items with bag/slot support (not just slot hint) |
+| `ITEM_USE` | Use a specific bag/slot item through native item-use handling |
 | `BAG_MOVE` | Move entire bags between slots |
 | `ITEM_TRADE` | Trade items with bag/slot source specification |
 | `TALENT_APPLY` | Apply talent builds including custom builds and reset via 0-0-0 |
@@ -114,6 +115,8 @@ It brings the most useful day-to-day bot management tools into one window with a
 - ✅ **Equipped bag visualization** - Shows backpack + 4 equipped bag slots (slots 1-4)
 - ✅ **Bag drag helpers** - Drag inventory bags onto equipped bag slots, move equipped bags between bag slots, and right-click to cancel drag state
 - ✅ **Per-bag empty states** - Context-aware messages when specific bags are empty
+- ✅ **Use Mode** - Click usable bot bag items such as recipe books and consumables to trigger native `ITEM_USE`
+- ✅ **Batch Use** - In Use Mode + Batch Mode, PBAM loops the roster, refreshes each bot inventory, and uses the same item ID when found
 - ✅ **Player inventory picker** - Scrollable rarity-colored local player item picker with item tooltips
 - ✅ **Player trade helper** - In Trade Mode, picker-selected local player bag items can fill the normal trade slots (1-6)
 - ✅ **Local player inventory view** - Selecting your own character now opens a local Inventory tab view in Extended
