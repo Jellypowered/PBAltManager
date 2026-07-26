@@ -724,9 +724,12 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
 
     panel.OnRefresh = function(botName)
         if not botName then return end
-        local k=string.lower(botName); PBAM.Bridge.Crafting[k]=nil; PBAM.Bridge.Professions[k]=nil
-        PBAM.Bridge.Send("GET", "PROFESSION~"..botName); PBAM.Bridge.RequestBotSkills(botName)
-        if selectedSkillId then PBAM.Bridge.ProfessionRecipes[k .. ":" .. tostring(selectedSkillId)] = nil end
+        -- Keep the last known profession lists visible while fresh data is requested.
+        -- Clearing these caches on every tab switch made secondary professions and the
+        -- sidebar roster temporarily disappear whenever bridge replies were delayed.
+        PBAM.Bridge.Send("GET", "PROFESSION~" .. botName)
+        PBAM.Bridge.RequestBotSkills(botName)
+        if selectedSkillId then PBAM.Bridge.RequestProfessionRecipes(botName, selectedSkillId) end
         panel.OnBotSelect(botName)
     end
 

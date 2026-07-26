@@ -1332,69 +1332,62 @@ function PBAM.RefreshRosterDisplay()
         if not entry then return {}, {} end
         if entry.isPlayer then return GetPlayerProfessions() end
         local key = string.lower(tostring(entry.name or ""))
-        -- Check bulk data first to avoid duplicate individual requests
+
+        -- Merge every available source. Bulk skill data can be partial while selected-bot
+        -- BOT_SKILLS/PROFESSION replies are still arriving, so do not return early from it.
+        local primary, secondary, seen = {}, {}, {}
+        local function AddProfession(bucket, prof)
+            if not prof then return end
+            local k = string.lower(tostring(prof.key or prof.displayName or prof.name or "")):gsub("%s+", ""):gsub("_", "")
+            if k ~= "" then
+                if seen[k] then return end
+                seen[k] = true
+            end
+            table.insert(bucket, prof)
+        end
+
         if PBAM.Bridge and PBAM.Bridge.BotSkillsBulk and not PBAM.Bridge.BotSkillsBulk.loading then
             local bulkEntry = PBAM.Bridge.BotSkillsBulk.items[key]
             if bulkEntry and bulkEntry.skills and #bulkEntry.skills > 0 then
-                -- Rebuild professions from bulk skills data
-                local primary, secondary = {}, {}
                 for _, skill in ipairs(bulkEntry.skills or {}) do
                     if string.lower(skill.category or "") == "profession" then
-                        local isSecondary = string.lower(skill.key or "") == "cooking" or string.lower(skill.key or "") == "fishing" or string.lower(skill.key or "") == "firstaid"
-                        local bucket = isSecondary and secondary or primary
-                        table.insert(bucket, BuildProfessionEntry(skill.name or skill.key, skill.value or 0, skill.maxValue or 75, skill.id or 0, isSecondary and "secondary" or "primary"))
+                        local skillKey = string.lower(tostring(skill.key or "")):gsub("%s+", ""):gsub("_", "")
+                        local isSecondary = skillKey == "cooking" or skillKey == "fishing" or skillKey == "firstaid"
+                        AddProfession(isSecondary and secondary or primary, BuildProfessionEntry(skill.name or skill.key, skill.value or 0, skill.maxValue or 75, skill.id or 0, isSecondary and "secondary" or "primary"))
                     end
                 end
-                return primary, secondary
             end
         end
+
         -- Check both Professions (from BOT_SKILLS) and Crafting (from PROFESSION command)
         local skills = PBAM.Bridge and PBAM.Bridge.Professions and PBAM.Bridge.Professions[key] or nil
         local crafting = PBAM.Bridge and PBAM.Bridge.Crafting and PBAM.Bridge.Crafting[key] or nil
 
-        if not skills and not crafting then
-            -- Skip individual requests if bulk is in progress to avoid duplicates
-            if sortMode == "profession" and (PBAM.CurrentTab == "Professions" or PBAM.CurrentTab == "Trainer" or PBAM.CurrentTab == "Inventory") and PBAM.Bridge and PBAM.Bridge.RequestBotSkills and (not PBAM.Bridge.BotSkillsBulk or PBAM.Bridge.BotSkillsBulk.loading == false) then
-                table.insert(missingSkillNames, entry.name)
-            end
-            return {}, {}
-        end
-
-        -- Merge primary and secondary from both sources
-        local primary = {}
-        local secondary = {}
-
         if skills then
-            for _, prof in ipairs(skills.primary or {}) do table.insert(primary, prof) end
-            for _, prof in ipairs(skills.secondary or {}) do table.insert(secondary, prof) end
+            for _, prof in ipairs(skills.primary or {}) do AddProfession(primary, prof) end
+            for _, prof in ipairs(skills.secondary or {}) do AddProfession(secondary, prof) end
         end
 
-        -- Also check crafting data for additional professions
         if crafting and crafting.professions then
             for name, data in pairs(crafting.professions) do
                 local k = string.lower(tostring(name or "")):gsub("%s+", ""):gsub("_", " ")
-                -- Determine if primary or secondary based on profession name
                 local isSecondary = SECONDARY_PROFESSIONS[k] or false
-                local bucket = isSecondary and secondary or primary
-                -- Check if we already have this profession from skills data
-                local alreadyHave = false
-                for _, p in ipairs(bucket) do
-                    local existingKey = string.lower(p.name or ""):gsub("%s+", ""):gsub("_", " ")
-                    if existingKey == k then alreadyHave = true break end
+                local displayName = name
+                if k == "first aid" or k == "firstaid" or k == "first_aid" then
+                    displayName = "First Aid"
+                elseif k == "cooking" then
+                    displayName = "Cooking"
+                elseif k == "fishing" then
+                    displayName = "Fishing"
                 end
-                if not alreadyHave then
-                    -- Normalize the profession name for display
-                    local displayName = name
-                    if k == "first aid" or k == "firstaid" or k == "first_aid" then
-                        displayName = "First Aid"
-                    elseif k == "cooking" then
-                        displayName = "Cooking"
-                    elseif k == "fishing" then
-                        displayName = "Fishing"
-                    end
-                    local prof = BuildProfessionEntry(displayName, data.level or 0, data.max or 75, 0, isSecondary and "secondary" or "primary")
-                    if prof then table.insert(bucket, prof) end
-                end
+                AddProfession(isSecondary and secondary or primary, BuildProfessionEntry(displayName, data.level or 0, data.max or 75, 0, isSecondary and "secondary" or "primary"))
+            end
+        end
+
+        if not skills and not crafting and #primary == 0 and #secondary == 0 then
+            -- Skip individual requests if bulk is in progress to avoid duplicates
+            if sortMode == "profession" and (PBAM.CurrentTab == "Professions" or PBAM.CurrentTab == "Trainer" or PBAM.CurrentTab == "Inventory") and PBAM.Bridge and PBAM.Bridge.RequestBotSkills and (not PBAM.Bridge.BotSkillsBulk or PBAM.Bridge.BotSkillsBulk.loading == false) then
+                table.insert(missingSkillNames, entry.name)
             end
         end
 
@@ -1568,6 +1561,13 @@ function PBAM.RefreshRosterDisplay()
             end
             addProfessionGroups(entry._primaryProfessions or {}, "Primary", 1)
             addProfessionGroups(entry._secondaryProfessions or {}, "Secondary", 2)
+            if not hasAnyProfession then
+                group = ensureGroup("profession:other:no-data", "No profession data", 3000)
+                group.mainHeader = "Other"
+                group.mainOrder = 3
+                group.subHeader = "No profession data"
+                table.insert(group.entries, entry)
+            end
         elseif sortMode == "bagspace" then
             group = ensureGroup("bagspace", "Free Bag Space", 1)
             table.insert(group.entries, entry)
