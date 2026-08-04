@@ -310,7 +310,7 @@ PBAM.RegisterTab("Spells", "Spells", 5, function(panel)
                 if entry.onSelect then entry.onSelect(entry.value, entry) end
                 HideTargetMenu()
             end)
-            btn:SetEnabled(not (entry.disabled and entry.disabled()))
+            PBAM.SetFrameEnabled(btn, not (entry.disabled and entry.disabled()))
             table.insert(targetEntries, btn)
             count = count + 1
         end

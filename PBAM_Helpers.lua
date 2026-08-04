@@ -112,9 +112,18 @@ local function AttachSharedStatusText(panel, defaultMsg, defaultKind)
     return fs
 end
 
+local function SetFrameEnabled(frame, enabled)
+    if not frame then return end
+    if enabled then
+        frame:Enable()
+    else
+        frame:Disable()
+    end
+end
+
 local function SetButtonEnabled(button, enabled, disabledTooltip)
     if not button then return end
-    button:SetEnabled(enabled and true or false)
+    SetFrameEnabled(button, enabled)
     button._disabledTooltip = disabledTooltip
     if button._pbamTooltipHooked then return end
     button._pbamTooltipHooked = true
@@ -490,6 +499,7 @@ PBAM.CreateIconLabel = CreateIconLabel
 PBAM.CreateStatusText = CreateStatusText
 PBAM.SetStatusText = SetStatusText
 PBAM.AttachSharedStatusText = AttachSharedStatusText
+PBAM.SetFrameEnabled = SetFrameEnabled
 PBAM.SetButtonEnabled = SetButtonEnabled
 PBAM.CreateSmallButton = CreateSmallButton
 PBAM.CreateDropdown = CreateDropdown

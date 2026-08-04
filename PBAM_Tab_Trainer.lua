@@ -273,7 +273,7 @@ PBAM.RegisterTab("Trainer", "Trainer", 6, function(panel)
 
     local function UpdateProfessionFilterCheckboxState()
         local enabled = batchModeEnabled and true or false
-        professionFilterCheckbox:SetEnabled(enabled)
+        PBAM.SetFrameEnabled(professionFilterCheckbox, enabled)
         if not enabled then
             professionFilterCheckbox:SetChecked(false)
             professionFilterEnabled = false
