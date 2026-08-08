@@ -40,6 +40,12 @@ Bridge.Connected     = false
 Bridge.Server        = nil
 Bridge.Protocol      = nil
 Bridge._InFlightRequests = {}  -- Track in-flight requests to prevent duplicates
+Bridge.Capabilities = {}
+Bridge.Formations = {}
+Bridge.FormationRequests = {}
+Bridge.StrategyActions = {}
+Bridge.WeaponEnchant = {}
+Bridge.StateFrames = {}
 
 -- Class ID lookup (WotLK)
 Bridge.ClassById = {
@@ -104,6 +110,22 @@ local function splitOnce(s, sep)
     local idx = string.find(s, sep, 1, true)
     if not idx then return s, "" end
     return string.sub(s, 1, idx - 1), string.sub(s, idx + 1)
+end
+
+local function splitFields(value)
+    local fields = {}
+    value = tostring(value or "")
+    local start = 1
+    while true do
+        local idx = string.find(value, "~", start, true)
+        if not idx then
+            fields[#fields + 1] = string.sub(value, start)
+            break
+        end
+        fields[#fields + 1] = string.sub(value, start, idx - 1)
+        start = idx + 1
+    end
+    return fields
 end
 
 local function trim(value)
@@ -234,7 +256,48 @@ function Bridge.RequestTrainer(bot)   local t=makeToken("trainer"); Bridge.Send(
 function Bridge.RequestQuests(mode, bot) mode = string.upper(mode or "ALL")
     local t=makeToken("quests"); Bridge.Send("GET", "QUESTS~" .. mode .. "~" .. urlEncode(bot or "") .. "~" .. t); return t
 end
-function Bridge.RequestGameObjects(bot) Bridge.Send("GET", "GAMEOBJECTS~" .. bot) end
+function Bridge.RequestGameObjects(bot)
+    local t = makeToken("objects")
+    Bridge.Send("GET", "GAMEOBJECTS~" .. urlEncode(bot) .. "~" .. t)
+    return t
+end
+function Bridge.RequestWeaponEnchant(bot)
+    if not bot or bot == "" then return nil end
+    local t = makeToken("enchant")
+    Bridge.WeaponEnchant[t] = { botName = bot }
+    Bridge.Send("GET", "WEAPON_ENCHANT~" .. urlEncode(bot) .. "~" .. t)
+    return t
+end
+function Bridge.RunStrategy(botOrScope, stateScope, changes, callback)
+    local scope, target = "BOT", botOrScope or ""
+    if type(botOrScope) == "table" then
+        scope, target = string.upper(botOrScope.scope or "BOT"), botOrScope.target or ""
+        stateScope, changes, callback = botOrScope.stateScope, botOrScope.changes, botOrScope.callback
+    end
+    scope = string.upper(scope or "BOT")
+    stateScope = string.upper(stateScope or "N")
+    changes = trim(changes or "")
+    if changes == "" or #changes > 160 or (scope == "BOT" and target == "") or (scope ~= "BOT" and target ~= "") then return nil end
+    local t = makeToken("strategy")
+    Bridge.StrategyActions[t] = { scope = scope, target = target, stateScope = stateScope, changes = changes, callback = callback }
+    Bridge.Send("RUN", "STRATEGY~" .. scope .. "~" .. urlEncode(target) .. "~" .. t .. "~" .. stateScope .. "~" .. urlEncode(changes))
+    return t
+end
+function Bridge.ApplyFormation(formation, callback)
+    local allowed = { arrow=true, queue=true, near=true, melee=true, line=true, circle=true, chaos=true, shield=true }
+    formation = string.lower(trim(formation or ""))
+    if not allowed[formation] then return nil end
+    local t = makeToken("formation")
+    Bridge.FormationRequests[t] = { formation = formation, callback = callback }
+    Bridge.Send("RUN", "FORMATION~GROUP~~" .. t .. "~" .. urlEncode(formation))
+    return t
+end
+function Bridge.RequestFormations(callback)
+    local t = makeToken("formations")
+    Bridge.FormationRequests[t] = { callback = callback, items = {}, begun = false }
+    Bridge.Send("GET", "FORMATIONS~GROUP~~" .. t)
+    return t
+end
 function Bridge.CraftRecipe(bot, skillId, spellId, itemId)
     local t=makeToken("craft"); Bridge.ProfessionCraftActions[t] = { botName = bot, skillId = tonumber(skillId) or 0, spellId = tonumber(spellId) or 0, itemId = tonumber(itemId) or 0 }; Bridge.Send("RUN", "CRAFT_RECIPE~" .. urlEncode(bot) .. "~" .. t .. "~" .. (skillId or 0) .. "~" .. (spellId or 0) .. "~" .. (itemId or 0)); return t
 end
@@ -358,6 +421,14 @@ function Bridge.OnAddonMessage(prefix, message, channel, sender)
     elseif opcode == "HELLO_NACK" then
         Bridge.Connected = false
         Bridge.FireCallback("Disconnected", "Protocol mismatch")
+    elseif opcode == "CAPS" then
+        Bridge.Capabilities = {}
+        for capability in string.gmatch(payload or "", "[^,]+") do
+            Bridge.Capabilities[trim(capability)] = true
+        end
+        Bridge.FireCallback("CapabilitiesUpdated", Bridge.Capabilities)
+    elseif opcode == "ERR" then
+        Bridge.FireCallback("BridgeError", payload or "")
     elseif opcode == "PING" then
         -- Respond to ping
         Bridge.Send("PONG", payload or "")
@@ -370,6 +441,8 @@ function Bridge.OnAddonMessage(prefix, message, channel, sender)
         Bridge.ApplyStatesPayload(payload)
     elseif opcode == "STATE" then
         Bridge.ApplyStatePayload(payload)
+    elseif opcode == "STATE_BEGIN" or opcode == "STATE_ITEM" or opcode == "STATE_END" or opcode == "STATE_ABORT" then
+        Bridge.ApplyFramedStatePayload(opcode, payload)
     elseif opcode == "DETAIL" then
         Bridge.ApplyBotDetailPayload(payload)
     elseif opcode == "DETAILS" then
@@ -419,6 +492,12 @@ function Bridge.OnAddonMessage(prefix, message, channel, sender)
         Bridge.ApplyCraftRecipeResult(payload, opcode)
     elseif opcode == "INVENTORY_ITEM_ACTION" then
         Bridge.ApplyInventoryItemActionPayload(payload)
+    elseif opcode == "WEAPON_ENCHANT" then
+        Bridge.ApplyWeaponEnchantPayload(payload)
+    elseif opcode == "FORMATIONS_BEGIN" or opcode == "FORMATIONS_ITEM" or opcode == "FORMATIONS_END" or opcode == "FORMATION_ACK" then
+        Bridge.ApplyFormationPayload(opcode, payload)
+    elseif opcode == "STRATEGY_ACK" then
+        Bridge.ApplyStrategyAckPayload(payload)
     elseif opcode == "CAST_SPELL" or opcode == "QUEST_ABANDON" or opcode == "QUEST_SHARE" or opcode == "ITEM_EQUIP" or opcode == "ITEM_USE" or opcode == "BAG_MOVE" or opcode == "ITEM_TRADE" or opcode == "TALENT_APPLY" then
         Bridge.ApplyNativeActionResult(opcode, payload)
     elseif opcode == "TRAINER_LEARN" then
@@ -469,6 +548,38 @@ function Bridge.ApplyStatesPayload(payload)
     end
     Bridge.DebugPrint("STATES: " .. applied .. " entries")
     Bridge.FireCallback("StatesUpdated", applied)
+end
+
+function Bridge.ApplyFramedStatePayload(opcode, payload)
+    local fields = splitFields(payload)
+    local token = trim(fields[1] or "")
+    if token == "" then return nil end
+    if opcode == "STATE_ABORT" then
+        Bridge.StateFrames[token] = nil
+        Bridge.FireCallback("StateFrameError", { token = token, reason = urlDecode(fields[3] or fields[2] or "UNKNOWN") })
+        return nil
+    end
+    if opcode == "STATE_BEGIN" then
+        local botName = trim(urlDecode(fields[2] or ""))
+        Bridge.StateFrames[token] = { botName = botName, combat = {}, normal = {}, combatCount = tonumber(fields[3]) or 0, normalCount = tonumber(fields[4]) or 0 }
+    elseif opcode == "STATE_ITEM" then
+        local frame = Bridge.StateFrames[token]
+        if not frame then return nil end
+        local scope = string.upper(fields[3] or "")
+        local index = tonumber(fields[4]) or 0
+        local strategy = urlDecode(fields[5] or "")
+        if scope == "C" then frame.combat[index] = strategy elseif scope == "N" then frame.normal[index] = strategy end
+    elseif opcode == "STATE_END" then
+        local frame = Bridge.StateFrames[token]
+        if not frame then return nil end
+        local botName = trim(urlDecode(fields[2] or frame.botName or ""))
+        local combat = table.concat(frame.combat, ", ")
+        local normal = table.concat(frame.normal, ", ")
+        Bridge.StateFrames[token] = nil
+        Bridge.ApplyStatePayload(botName .. "~" .. combat .. "~" .. normal)
+        Bridge.FireCallback("StateUpdated", botName)
+    end
+    return Bridge.StateFrames[token]
 end
 
 function Bridge.ApplyStatePayload(payload)
@@ -1375,6 +1486,75 @@ function Bridge.ApplyCraftRecipeResult(payload, opcode)
     Bridge.ProfessionCraftActions[token] = nil
     Bridge.FireCallback("ProfessionCraftResult", result)
     Bridge.FireCallback("CraftRecipeResult", result) -- legacy callback alias
+end
+
+function Bridge.ApplyWeaponEnchantPayload(payload)
+    local fields = splitFields(payload)
+    local token = trim(fields[1] or "")
+    local result = {
+        token = token,
+        botName = trim(urlDecode(fields[2] or "")),
+        status = fields[3] or "",
+        mhItem = tonumber(fields[4]) or 0,
+        mhEnchant = tonumber(fields[5]) or 0,
+        mhDuration = tonumber(fields[6]) or 0,
+        ohItem = tonumber(fields[7]) or 0,
+        ohEnchant = tonumber(fields[8]) or 0,
+        ohDuration = tonumber(fields[9]) or 0,
+    }
+    Bridge.WeaponEnchant[token] = result
+    Bridge.FireCallback("WeaponEnchantUpdated", result)
+    return result
+end
+
+function Bridge.ApplyStrategyAckPayload(payload)
+    local values = splitFields(payload)
+    local token = trim(values[3] or "")
+    local pending = Bridge.StrategyActions[token] or {}
+    local result = {
+        scope = values[1] or pending.scope,
+        target = urlDecode(values[2] or pending.target or ""),
+        token = token,
+        stateScope = values[4] or pending.stateScope,
+        matched = tonumber(values[5]) or 0,
+        succeeded = tonumber(values[6]) or 0,
+        failed = tonumber(values[7]) or 0,
+        reason = urlDecode(values[8] or ""),
+    }
+    Bridge.StrategyActions[token] = nil
+    if type(pending.callback) == "function" then pending.callback(result) end
+    Bridge.FireCallback("StrategyUpdated", result)
+    return result
+end
+
+function Bridge.ApplyFormationPayload(opcode, payload)
+    local values = splitFields(payload)
+    if opcode == "FORMATION_ACK" then
+        local token = trim(values[3] or "")
+        local pending = Bridge.FormationRequests[token] or {}
+        local result = { scope=values[1] or "", target=urlDecode(values[2] or ""), token=token, success=tonumber(values[4]) or 0, failure=tonumber(values[5]) or 0, formation=values[6] or pending.formation }
+        Bridge.FormationRequests[token] = nil
+        if type(pending.callback) == "function" then pending.callback(result) end
+        Bridge.FireCallback("FormationUpdated", result)
+        return result
+    end
+    local token = trim(values[1] or "")
+    local request = Bridge.FormationRequests[token]
+    if not request then return nil end
+    if opcode == "FORMATIONS_BEGIN" then
+        request.expected = tonumber(values[2]) or 0
+        request.items = {}
+        request.begun = true
+    elseif opcode == "FORMATIONS_ITEM" and request.begun then
+        request.items[#request.items + 1] = { botName=urlDecode(values[2] or ""), formation=values[3] or "" }
+    elseif opcode == "FORMATIONS_END" and request.begun then
+        local result = { token=token, status="ok", expected=request.expected or 0, sent=tonumber(values[2]) or 0, items=request.items or {} }
+        Bridge.FormationRequests[token] = nil
+        if type(request.callback) == "function" then request.callback(result) end
+        Bridge.FireCallback("FormationsUpdated", result)
+        return result
+    end
+    return request
 end
 
 function Bridge.ApplyInventoryItemActionPayload(payload)

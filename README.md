@@ -44,6 +44,7 @@ It brings the most useful day-to-day bot management tools into one window with a
 - Outfits view
 - Search/filter tools and minimap launcher
 - Options panel with Silent Mode, Debug Mode, Hide Minimap Button, Suppress Legacy Sending, Confirm Destructive Actions, Default Roster Sort, Refresh Throttle, and Inventory player-picker visibility control
+- Bridge protocol helpers for formations, strategy mutations, framed state updates, capability discovery, and weapon-enchant diagnostics
 
 ## Requirements
 
@@ -85,6 +86,17 @@ It brings the most useful day-to-day bot management tools into one window with a
 ## 🌟 Feature Comparison: main vs Extended
 
 ### Native Bridge Endpoints (Extended only)
+
+The bridge adapter also exposes the upstream protocol additions through `PBAM.Bridge`:
+
+| API | Purpose |
+|-----|---------|
+| `ApplyFormation` / `RequestFormations` | Apply and inspect current group formations |
+| `RunStrategy` | Submit verified combat/non-combat strategy mutations |
+| `RequestWeaponEnchant` | Request an on-demand temporary-enchant diagnostic |
+| `Capabilities` | Read `STATE_FRAMING_V1` and `STRATEGY_MUTATION_V1` capabilities |
+
+These helpers preserve the `PBAM` prefix and can be used by future or custom PBAltManager UI controls without reintroducing legacy chat commands.
 
 | Action | Purpose |
 |--------|---------|
