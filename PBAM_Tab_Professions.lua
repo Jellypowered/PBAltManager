@@ -278,7 +278,8 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
         end
     end)
     PBAM.Bridge.RegisterCallback("InventoryUpdated", function(botName)
-        if botName == PBAM.SelectedBot and PBAM.CurrentTab == "Professions" then
+        -- Names in bridge packets may differ only by capitalization.
+        if PBAM.SelectedBot and string.lower(tostring(botName or "")) == string.lower(tostring(PBAM.SelectedBot)) and PBAM.CurrentTab == "Professions" then
             if RefreshTargetItemDropdown then RefreshTargetItemDropdown() end
             if panel.RefreshRecipes then panel.RefreshRecipes() end
         end
@@ -436,7 +437,7 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
         botName = botName or PBAM.SelectedBot
         if not botName or not PBAM.Bridge or not PBAM.Bridge.RequestInventory then return end
         if targetMode == "BAG" or targetMode == "EQUIP" then
-            PBAM.Bridge.RequestInventory(botName)
+            if PBAM.Bridge.RequestInventoryExact then PBAM.Bridge.RequestInventoryExact(botName) else PBAM.Bridge.RequestInventory(botName) end
         end
     end
 
@@ -515,8 +516,8 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
         targetModeDropdown:SetValues({
             { value = "NONE", label = "None / normal craft", onSelect = function() targetMode = "NONE"; RefreshTargetItemDropdown(); if panel.RefreshRecipes then panel.RefreshRecipes() end end },
             { value = "TRADE", label = "Trade not-traded slot", tooltip = "Automatically opens trade; put your target item in the not-traded slot.", onSelect = function() targetMode = "TRADE"; OpenTradeForSelectedBot(); RefreshTargetItemDropdown(); if panel.RefreshRecipes then panel.RefreshRecipes() end end },
-            { value = "BAG", label = "Bot bag item", tooltip = "Use an exact item location from the bot inventory snapshot.", onSelect = function() targetMode = "BAG"; if PBAM.SelectedBot and PBAM.Bridge.RequestInventory then PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end; RefreshTargetItemDropdown(); if panel.RefreshRecipes then panel.RefreshRecipes() end end },
-            { value = "EQUIP", label = "Bot equipped item", tooltip = "Use an equipped item from the bot inventory snapshot.", onSelect = function() targetMode = "EQUIP"; if PBAM.SelectedBot and PBAM.Bridge.RequestInventory then PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end; RefreshTargetItemDropdown(); if panel.RefreshRecipes then panel.RefreshRecipes() end end },
+            { value = "BAG", label = "Bot bag item", tooltip = "Use an exact item location from the bot inventory snapshot.", onSelect = function() targetMode = "BAG"; if PBAM.SelectedBot and PBAM.Bridge.RequestInventoryExact then PBAM.Bridge.RequestInventoryExact(PBAM.SelectedBot) end; RefreshTargetItemDropdown(); if panel.RefreshRecipes then panel.RefreshRecipes() end end },
+            { value = "EQUIP", label = "Bot equipped item", tooltip = "Use an equipped item from the bot inventory snapshot.", onSelect = function() targetMode = "EQUIP"; if PBAM.SelectedBot and PBAM.Bridge.RequestInventoryExact then PBAM.Bridge.RequestInventoryExact(PBAM.SelectedBot) end; RefreshTargetItemDropdown(); if panel.RefreshRecipes then panel.RefreshRecipes() end end },
         })
         targetModeDropdown:SetValue(targetMode)
         RefreshTargetItemDropdown()
@@ -803,6 +804,9 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
             end
         end
         profContent:SetHeight(18 + math.max(1,#list)*PROF_ROW_H)
+        -- A previous profession can leave the scroll child below its new range;
+        -- reset it whenever the list is rebuilt or rows appear to vanish.
+        profScroll:SetVerticalScroll(0)
         if not selectedSkillId or selectedSkillId == 0 then
             for _,e in ipairs(list) do
                 if not e.header and SkillId(e) > 0 then selectedSkillId = SkillId(e); selectedSkillName = NiceName(e.displayName or e.name); break end

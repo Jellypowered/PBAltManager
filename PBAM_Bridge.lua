@@ -189,6 +189,13 @@ function Bridge.RequestBotDetail(bot) Bridge.Send("GET", "DETAIL~" .. bot) end
 function Bridge.RequestBotDetails()   Bridge.Send("GET", "DETAILS") end
 function Bridge.RequestStats(bot)     Bridge.Send("GET", "STATS" .. (bot and "~" .. bot or "")) end
 function Bridge.RequestPvpStats(bot)  Bridge.Send("GET", "PVP_STATS" .. (bot and "~" .. bot or "")) end
+function Bridge.RequestInventoryExact(bot)
+    if not bot or bot == "" then return nil end
+    local t = makeToken("invexact")
+    Bridge.Send("GET", "INVENTORY_EXACT~" .. urlEncode(bot) .. "~" .. t)
+    return t
+end
+
 function Bridge.RequestInventory(bot)
     if not bot or bot == "" then return nil end
     local key = "INV~" .. string.lower(tostring(bot))
@@ -455,7 +462,7 @@ function Bridge.OnAddonMessage(prefix, message, channel, sender)
         Bridge.ApplyStatsPayload(payload)
     elseif opcode == "PVP_STATS" then
         Bridge.ApplyPvpStatsPayload(payload)
-    elseif opcode == "INV_BEGIN" or opcode == "INV_SUMMARY" or opcode == "INV_ITEM" or opcode == "INV_ITEM_LOC" or opcode == "INV_EQUIP_LOC" or opcode == "INV_BAG" or opcode == "INV_END" then
+    elseif opcode == "INV_BEGIN" or opcode == "INV_SUMMARY" or opcode == "INV_ITEM" or opcode == "INV_ITEM_LOC" or opcode == "INV_EQUIP_LOC" or opcode == "INV_BAG" or opcode == "INV_END" or opcode == "INV_EXACT_BEGIN" or opcode == "INV_EXACT_END" then
         Bridge.DebugPrint("[ROUTER] Routing INV_* message: opcode=" .. opcode .. " payload=" .. tostring(payload))
         Bridge.ApplyInventoryPayload(opcode .. "~" .. payload)
     elseif opcode == "INVENTORY" then
@@ -752,7 +759,7 @@ function Bridge.ApplyInventoryPayload(payload)
     if name == "" then return end
     local key = string.lower(name)
 
-    if opcode == "INV_BEGIN" then
+    if opcode == "INV_BEGIN" or opcode == "INV_EXACT_BEGIN" then
         Bridge.Inventory[key] = { name = name, token = token, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
         return
     end
@@ -793,6 +800,8 @@ function Bridge.ApplyInventoryPayload(payload)
         local itemId, rest4 = splitOnce(rest3, "~")
         local count, rest5 = splitOnce(rest4, "~")
         local itemText, soulbound = splitOnce(rest5, "~")
+        -- INVENTORY_EXACT sends count~soulbound; legacy INVENTORY may send count~link~soulbound.
+        if soulbound == "" then soulbound, itemText = itemText, "" end
         inv.itemLocations = inv.itemLocations or {}
         local row = {
             bag = tonumber(bag) or 0,
@@ -800,6 +809,7 @@ function Bridge.ApplyInventoryPayload(payload)
             itemId = tonumber(itemId) or 0,
             count = tonumber(count) or 0,
             text = trim(urlDecode(itemText)),
+            itemLink = trim(urlDecode(itemText)),
             soulbound = tostring(soulbound or "0") == "1",
         }
         table.insert(inv.itemLocations, row)
@@ -809,6 +819,7 @@ function Bridge.ApplyInventoryPayload(payload)
         local itemId, rest3 = splitOnce(rest2, "~")
         local count, rest4 = splitOnce(rest3, "~")
         local itemText, soulbound = splitOnce(rest4, "~")
+        if soulbound == "" then soulbound, itemText = itemText, "" end
         inv.equipmentLocations = inv.equipmentLocations or {}
         local row = {
             equipSlot = tonumber(equipSlot) or 0,
@@ -817,6 +828,7 @@ function Bridge.ApplyInventoryPayload(payload)
             itemId = tonumber(itemId) or 0,
             count = tonumber(count) or 0,
             text = trim(urlDecode(itemText)),
+            itemLink = trim(urlDecode(itemText)),
             soulbound = tostring(soulbound or "0") == "1",
         }
         table.insert(inv.equipmentLocations, row)
@@ -828,7 +840,7 @@ function Bridge.ApplyInventoryPayload(payload)
             table.insert(inv.items, { text = itemText, itemId = parseItemLinkId(itemText) })
         end
         Bridge.Inventory[key] = inv
-    elseif opcode == "INV_END" then
+    elseif opcode == "INV_EXACT_END" or opcode == "INV_END" then
         inv.loading = false
         Bridge.Inventory[key] = inv
         Bridge._InFlightRequests["INV~" .. key] = nil
