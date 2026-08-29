@@ -180,7 +180,11 @@ end
 function Bridge.SendHello()           Bridge.Send("HELLO", Bridge.VERSION) end
 function Bridge.SendPing()            Bridge.Send("PING", tostring(math.floor(GetTime() and GetTime()*1000 or 0))) end
 function Bridge.RequestRoster()       Bridge.Send("GET", "ROSTER") end
-function Bridge.RequestStates()       Bridge.Send("GET", "STATES") end
+function Bridge.RequestStates()
+    local t = makeToken("states")
+    Bridge.Send("GET", "STATES~" .. t)
+    return t
+end
 function Bridge.RequestBotDetail(bot) Bridge.Send("GET", "DETAIL~" .. bot) end
 function Bridge.RequestBotDetails()   Bridge.Send("GET", "DETAILS") end
 function Bridge.RequestStats(bot)     Bridge.Send("GET", "STATS" .. (bot and "~" .. bot or "")) end
