@@ -421,11 +421,15 @@ function Bridge.OnAddonMessage(prefix, message, channel, sender)
     elseif opcode == "HELLO_NACK" then
         Bridge.Connected = false
         Bridge.FireCallback("Disconnected", "Protocol mismatch")
-    elseif opcode == "CAPS" then
+    elseif opcode == "CAPS_BEGIN" then
         Bridge.Capabilities = {}
+    elseif opcode == "CAPS" then
+        Bridge.Capabilities = Bridge.Capabilities or {}
         for capability in string.gmatch(payload or "", "[^,]+") do
             Bridge.Capabilities[trim(capability)] = true
         end
+    elseif opcode == "CAPS_END" then
+        Bridge.Capabilities = Bridge.Capabilities or {}
         Bridge.FireCallback("CapabilitiesUpdated", Bridge.Capabilities)
     elseif opcode == "ERR" then
         Bridge.FireCallback("BridgeError", payload or "")
