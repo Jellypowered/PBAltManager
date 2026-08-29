@@ -313,9 +313,7 @@ function Bridge.RunInventoryItemAction(bot, action, itemId, count, bag, slot)
         slot = tonumber(slot),
     }
     local payload = "ITEM_ACTION~" .. urlEncode(bot) .. "~" .. t .. "~" .. action .. "~" .. (itemId or 0) .. "~" .. (count or 0)
-    if bag ~= nil and slot ~= nil then
-        payload = payload .. "~" .. tostring(tonumber(bag) or 0) .. "~" .. tostring(tonumber(slot) or 0)
-    end
+    -- main bridge uses the six-field ITEM_ACTION protocol; it resolves the item by entry.
     Bridge.Send("RUN", payload)
     return t
 end
@@ -329,7 +327,7 @@ end
 function Bridge.QuestAbandon(bot, questId)
     local t = makeToken("qdrop")
     Bridge.NativeActions[t] = { type = "QUEST_ABANDON", botName = bot, questId = tonumber(questId) or 0 }
-    Bridge.Send("RUN", "QUEST_ABANDON~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(questId) or 0))
+    Bridge.Send("RUN", "QUEST_ABANDON~" .. t .. "~" .. (tonumber(questId) or 0))
     return t
 end
 
@@ -342,8 +340,7 @@ end
 
 function Bridge.ItemEquip(bot, itemId, slotHint, bag, slot)
     local t = makeToken("equip")
-    local payload = "ITEM_EQUIP~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(itemId) or 0) .. "~" .. urlEncode(slotHint or "AUTO")
-    if bag ~= nil and slot ~= nil then payload = payload .. "~" .. (tonumber(bag) or 0) .. "~" .. (tonumber(slot) or 0) end
+    local payload = "ITEM_EQUIP~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(bag) or 0) .. "~" .. (tonumber(slot) or 0) .. "~" .. (tonumber(itemId) or 0) .. "~1"
     Bridge.NativeActions[t] = { type = "ITEM_EQUIP", botName = bot, itemId = tonumber(itemId) or 0, slotHint = slotHint or "AUTO", bag = tonumber(bag), slot = tonumber(slot) }
     Bridge.Send("RUN", payload)
     return t
@@ -359,14 +356,13 @@ end
 function Bridge.ItemUse(bot, itemId, bag, slot)
     local t = makeToken("itemuse")
     Bridge.NativeActions[t] = { type = "ITEM_USE", botName = bot, itemId = tonumber(itemId) or 0, bag = tonumber(bag) or 0, slot = tonumber(slot) or 0 }
-    Bridge.Send("RUN", "ITEM_USE~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(itemId) or 0) .. "~" .. (tonumber(bag) or 0) .. "~" .. (tonumber(slot) or 0))
+    Bridge.Send("RUN", "ITEM_USE~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(bag) or 0) .. "~" .. (tonumber(slot) or 0) .. "~" .. (tonumber(itemId) or 0) .. "~1")
     return t
 end
 
 function Bridge.ItemTrade(bot, itemId, targetName, count, bag, slot)
     local t = makeToken("trade")
-    local payload = "ITEM_TRADE~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(itemId) or 0) .. "~" .. urlEncode(targetName or "") .. "~" .. (tonumber(count) or 0)
-    if bag ~= nil and slot ~= nil then payload = payload .. "~" .. (tonumber(bag) or 0) .. "~" .. (tonumber(slot) or 0) end
+    local payload = "ITEM_TRADE~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(bag) or 0) .. "~" .. (tonumber(slot) or 0) .. "~" .. (tonumber(itemId) or 0) .. "~" .. (tonumber(count) > 0 and tonumber(count) or 1)
     Bridge.NativeActions[t] = { type = "ITEM_TRADE", botName = bot, itemId = tonumber(itemId) or 0, targetName = targetName or "", count = tonumber(count) or 0, bag = tonumber(bag), slot = tonumber(slot) }
     Bridge.Send("RUN", payload)
     return t
@@ -498,7 +494,7 @@ function Bridge.OnAddonMessage(prefix, message, channel, sender)
         Bridge.ApplyFormationPayload(opcode, payload)
     elseif opcode == "STRATEGY_ACK" then
         Bridge.ApplyStrategyAckPayload(payload)
-    elseif opcode == "CAST_SPELL" or opcode == "QUEST_ABANDON" or opcode == "QUEST_SHARE" or opcode == "ITEM_EQUIP" or opcode == "ITEM_USE" or opcode == "BAG_MOVE" or opcode == "ITEM_TRADE" or opcode == "TALENT_APPLY" then
+    elseif opcode == "CAST_SPELL" or opcode == "QUEST_ABANDON" or opcode == "QUEST_ABANDON_RESULT" or opcode == "QUEST_SHARE" or opcode == "ITEM_EQUIP" or opcode == "INVENTORY_ITEM_EQUIP" or opcode == "ITEM_USE" or opcode == "INVENTORY_ITEM_USE" or opcode == "BAG_MOVE" or opcode == "ITEM_TRADE" or opcode == "INVENTORY_ITEM_TRADE" or opcode == "TALENT_APPLY" or opcode == "TALENT_APPLY_RESULT" or opcode == "CRAFT_RECIPE_TARGET_RESULT" then
         Bridge.ApplyNativeActionResult(opcode, payload)
     elseif opcode == "TRAINER_LEARN" then
         Bridge.ApplyTrainerLearnResult(payload)
@@ -1584,6 +1580,21 @@ function Bridge.ApplyInventoryItemActionPayload(payload)
 end
 
 function Bridge.ApplyNativeActionResult(opcode, payload)
+    local fields = splitFields(payload or "")
+    if opcode == "QUEST_ABANDON_RESULT" or opcode == "TALENT_APPLY_RESULT" or opcode == "CRAFT_RECIPE_TARGET_RESULT" then
+        local token, name = fields[1] or "", fields[2] or ""
+        local normalized = { name, token }
+        for i = 3, #fields do normalized[#normalized + 1] = fields[i] end
+        payload = table.concat(normalized, "~")
+        opcode = opcode == "QUEST_ABANDON_RESULT" and "QUEST_ABANDON" or (opcode == "TALENT_APPLY_RESULT" and "TALENT_APPLY" or "CRAFT_RECIPE_TARGET")
+    elseif opcode == "INVENTORY_ITEM_EQUIP" then
+        opcode = "ITEM_EQUIP"
+    elseif opcode == "INVENTORY_ITEM_USE" then
+        opcode = "ITEM_USE"
+    elseif opcode == "INVENTORY_ITEM_TRADE" then
+        opcode = "ITEM_TRADE"
+    end
+
     local name, rest = splitOnce(payload or "", "~")
     local token, rest2 = splitOnce(rest or "", "~")
     local status, rest3 = splitOnce(rest2 or "", "~")
