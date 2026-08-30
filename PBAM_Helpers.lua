@@ -166,7 +166,8 @@ local function BuildColoredItemLabel(label, itemLink, itemId, quality)
     label = tostring(label or "")
     if label == "" then return label end
     if not quality and GetItemInfo then
-        local _, _, itemQuality = GetItemInfo(itemLink or itemId or 0)
+        local lookup = (itemLink and itemLink ~= "") and itemLink or itemId
+        local _, _, itemQuality = GetItemInfo(lookup or 0)
         quality = itemQuality
     end
     return GetItemQualityColor(quality) .. label .. "|r"
