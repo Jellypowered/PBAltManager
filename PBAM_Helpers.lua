@@ -177,8 +177,12 @@ local function SetDropdownButtonTooltip(button)
     local entry = button._pbamDropdownEntry
     if not GameTooltip then return end
     GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
-    if entry.tooltipItemLink and GameTooltip.SetHyperlink then
-        GameTooltip:SetHyperlink(entry.tooltipItemLink)
+    -- SetHyperlink throws on plain names, numeric fields, or unsupported links.
+    -- Only pass an actual item hyperlink to avoid tooltip libraries aborting the
+    -- dropdown's OnEnter handler (notably LibExtraTip on WotLK clients).
+    local itemLink = tostring(entry.tooltipItemLink or "")
+    if itemLink:find("|Hitem:", 1, true) or itemLink:match("^item:%d+") then
+        if GameTooltip.SetHyperlink then GameTooltip:SetHyperlink(itemLink) end
     elseif entry.tooltipItemId and tonumber(entry.tooltipItemId or 0) > 0 and GameTooltip.SetHyperlink then
         GameTooltip:SetHyperlink("item:" .. tostring(entry.tooltipItemId))
     elseif entry.tooltipTitle or entry.tooltipText or entry.tooltip then
