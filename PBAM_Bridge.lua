@@ -386,7 +386,9 @@ end
 function Bridge.TalentApply(bot, buildString, dryRun)
     local t = makeToken("talapply")
     Bridge.NativeActions[t] = { type = "TALENT_APPLY", botName = bot, buildString = buildString or "", dryRun = dryRun and true or false }
-    Bridge.Send("RUN", "TALENT_APPLY~" .. urlEncode(bot) .. "~" .. t .. "~" .. urlEncode(buildString or "") .. "~" .. (dryRun and "1" or "0"))
+    -- Current bridge TALENT_APPLY_V1 accepts bot, token, and build only;
+    -- the old dry-run field causes BAD_FIELD_COUNT.
+    Bridge.Send("RUN", "TALENT_APPLY~" .. urlEncode(bot) .. "~" .. t .. "~" .. urlEncode(buildString or ""))
     return t
 end
 
