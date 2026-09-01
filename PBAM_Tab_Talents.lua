@@ -142,21 +142,6 @@ local function refreshAfterTalentApply(botName)
     end)
 end
 
-StaticPopupDialogs = StaticPopupDialogs or {}
-StaticPopupDialogs["PBAM_CONFIRM_TALENT_APPLY"] = {
-    text = "Apply talent build to %s?\n\n%s",
-    button1 = YES,
-    button2 = NO,
-    OnAccept = function(self, data)
-        if data and data.panel and data.panel.ApplySelectedTalent then
-            data.panel:ApplySelectedTalent(true)
-        end
-    end,
-    timeout = 0,
-    whileDead = 1,
-    hideOnEscape = 1,
-}
-
 -- Current mod-playerbots talent commands do not expose a real "reset all talents" action.
 -- Do not fake it with talents apply 000...: playerbot rejects that as "Invalid link".
 -- TODO bridge-talents: replace ResetTalents with a native bridge/server endpoint when available.
@@ -167,7 +152,6 @@ PBAM.RegisterTab("Talents", "Talents", 2, function(panel)
     local specRows = {}
 
     panel.SelectedTalentBuild = nil
-    panel.DryRun = true
 
     local emptyFs = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     emptyFs:SetPoint("CENTER", panel, "CENTER")
@@ -189,15 +173,6 @@ PBAM.RegisterTab("Talents", "Talents", 2, function(panel)
 
     local status = PBAM.AttachSharedStatusText(panel, "Select a bot to inspect or apply talents.", "info")
 
-    local dryRun = CreateFrame("CheckButton", nil, header, "UICheckButtonTemplate")
-    dryRun:SetPoint("TOPRIGHT", header, "TOPRIGHT", -18, -55)
-    dryRun:SetChecked(true)
-    dryRun:SetScript("OnClick", function(self) panel.DryRun = self:GetChecked() and true or false end)
-    dryRun.text = dryRun:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    dryRun.text:SetPoint("RIGHT", dryRun, "LEFT", 2, 1)
-    dryRun.text:SetText("Dry Run")
-    dryRun.text:SetTextColor(0.9, 0.8, 0.45, 1)
-
     local applyBtn = CreateFrame("Button", nil, header, "UIPanelButtonTemplate")
     applyBtn:SetSize(68, 22)
     applyBtn:SetPoint("TOPRIGHT", header, "TOPRIGHT", -18, -27)
@@ -206,7 +181,6 @@ PBAM.RegisterTab("Talents", "Talents", 2, function(panel)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:SetText("Apply Talent Build", 1, 0.82, 0.22, true)
         GameTooltip:AddLine("Apply the selected talent build to the bot.", 0.8, 0.8, 0.8, true)
-        GameTooltip:AddLine("Dry Run mode shows what would happen without applying.", 0.6, 0.6, 0.6, true)
         GameTooltip:Show()
     end)
     applyBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -645,23 +619,11 @@ PBAM.RegisterTab("Talents", "Talents", 2, function(panel)
         setTextSafe(status, "Reset talents requires bridge TALENT_APPLY endpoint.")
     end
 
-    function panel:ApplySelectedTalent(fromConfirmation)
+    function panel:ApplySelectedTalent()
         local botName = PBAM.SelectedBot
         local spec = self.SelectedTalentBuild
         if not botName or (not spec and not self.TalentPlanDirty) then
             setTextSafe(status, "Select a premade build or edit individual talents first.")
-            return
-        end
-
-        if self.DryRun and not fromConfirmation then
-            local desc
-            if self.TalentPlanDirty then
-                desc = "Custom talent build\nPoints: " .. tostring(countAllPoints(self.TalentPlan))
-            else
-                desc = tostring(spec.name or "Unnamed")
-                if spec.build and spec.build ~= "" then desc = desc .. "\nPoint summary: " .. tostring(spec.build) end
-            end
-            StaticPopup_Show("PBAM_CONFIRM_TALENT_APPLY", botName, desc, { panel = self })
             return
         end
 
