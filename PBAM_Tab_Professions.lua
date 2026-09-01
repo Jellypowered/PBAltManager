@@ -583,6 +583,9 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
     end
 
     panel.RefreshRecipes = function()
+        -- Reused recipe rows can otherwise remain outside the new scroll range
+        -- after changing profession or bot.
+        recipeScroll:SetVerticalScroll(0)
         Clear(recipeRows)
         if not PBAM.SelectedBot then return end
         if not selectedSkillId or selectedSkillId == 0 then
@@ -739,6 +742,8 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
     end)
 
     panel.OnBotSelect = function(botName)
+        profScroll:SetVerticalScroll(0)
+        recipeScroll:SetVerticalScroll(0)
         Clear(profRows)
         if botName ~= lastBotName then selectedSkillId = nil; selectedSkillName = nil; selectedTargetItem = nil; lastBotName = botName end
         if RefreshTargetItemDropdown then RefreshTargetItemDropdown() end
