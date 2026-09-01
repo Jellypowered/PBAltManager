@@ -206,7 +206,11 @@ function Bridge.RequestInventory(bot)
         return nil
     end
     Bridge._InFlightRequests[key] = now
-    local t=makeToken("inv"); Bridge.Send("GET", "INVENTORY~" .. urlEncode(bot) .. "~" .. t); return t 
+    local t=makeToken("inv")
+    -- The current bridge exposes physical bag positions through INVENTORY_EXACT.
+    -- Keep this legacy entry point exact so all inventory actions receive usable bag/slot data.
+    Bridge.Send("GET", "INVENTORY_EXACT~" .. urlEncode(bot) .. "~" .. t)
+    return t
 end
 function Bridge.RequestBank(bot)
     if not bot or bot == "" then return nil end
