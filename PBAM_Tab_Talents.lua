@@ -725,7 +725,7 @@ PBAM.RegisterTab("Talents", "Talents", 2, function(panel)
 
     if not panel._talentCallbacksRegistered then
         PBAM.Bridge.RegisterCallback("TalentSpecsUpdated", function(botName)
-            if botName == PBAM.SelectedBot and PBAM.CurrentTab == "Talents" then
+            if PBAM.SelectedBot and string.lower(tostring(botName or "")) == string.lower(tostring(PBAM.SelectedBot)) and PBAM.CurrentTab == "Talents" then
                 paintSpecRows()
                 setTextSafe(status, "Talent builds loaded from bridge.")
             end
@@ -736,7 +736,7 @@ PBAM.RegisterTab("Talents", "Talents", 2, function(panel)
             end
         end)
         PBAM.Bridge.RegisterCallback("TALENT_APPLYResult", function(result)
-            if not result or result.botName ~= PBAM.SelectedBot or PBAM.CurrentTab ~= "Talents" then return end
+            if not result or not PBAM.SelectedBot or string.lower(tostring(result.botName or "")) ~= string.lower(tostring(PBAM.SelectedBot)) or PBAM.CurrentTab ~= "Talents" then return end
             setTextSafe(status, "Talent apply " .. (result.result == "OK" and "ok" or ("failed: " .. tostring(result.reason or "unknown"))) .. (result.summary and result.summary ~= "" and (" (" .. result.summary .. ")") or ""))
             if result.result == "OK" then
                 panel.TalentPlanDirty = false

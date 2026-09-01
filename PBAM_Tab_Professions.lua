@@ -227,12 +227,12 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
     end
 
     local function refresh(botName)
-        if botName == PBAM.SelectedBot and PBAM.CurrentTab == "Professions" and panel.OnBotSelect then panel.OnBotSelect(botName) end
+        if PBAM.SelectedBot and string.lower(tostring(botName or "")) == string.lower(tostring(PBAM.SelectedBot)) and PBAM.CurrentTab == "Professions" and panel.OnBotSelect then panel.OnBotSelect(PBAM.SelectedBot) end
     end
     PBAM.Bridge.RegisterCallback("CraftingUpdated", refresh)
     PBAM.Bridge.RegisterCallback("BotSkillsUpdated", refresh)
     PBAM.Bridge.RegisterCallback("ProfessionRecipesUpdated", function(botName, skillId)
-        if botName == PBAM.SelectedBot and tonumber(skillId) == tonumber(selectedSkillId) and panel.RefreshRecipes then panel.RefreshRecipes() end
+        if PBAM.SelectedBot and string.lower(tostring(botName or "")) == string.lower(tostring(PBAM.SelectedBot)) and tonumber(skillId) == tonumber(selectedSkillId) and panel.RefreshRecipes then panel.RefreshRecipes() end
     end)
     PBAM.Bridge.RegisterCallback("ProfessionCraftResult", function(result)
         if result and result.botName == PBAM.SelectedBot and statusText then

@@ -2063,16 +2063,15 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
         local key = string.lower(PBAM.SelectedBot)
         local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
         if inv and inv.loading then return end
-        After(1.50, function()
+        local function requestCurrentInventory()
             local currentKey = PBAM.SelectedBot and string.lower(PBAM.SelectedBot)
             local currentInv = currentKey and PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[currentKey]
-            if PBAM.SelectedBot and not (currentInv and currentInv.loading) then PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end
-        end)
-        After(2.25, function()
-            local currentKey = PBAM.SelectedBot and string.lower(PBAM.SelectedBot)
-            local currentInv = currentKey and PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[currentKey]
-            if PBAM.SelectedBot and not (currentInv and currentInv.loading) then PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end
-        end)
+            if PBAM.SelectedBot and not (currentInv and currentInv.loading) then
+                if PBAM.Bridge.RequestInventoryExact then PBAM.Bridge.RequestInventoryExact(PBAM.SelectedBot) else PBAM.Bridge.RequestInventory(PBAM.SelectedBot) end
+            end
+        end
+        After(1.50, requestCurrentInventory)
+        After(2.25, requestCurrentInventory)
     end
 
     RequestEquipmentRefresh = function()
