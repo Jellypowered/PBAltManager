@@ -388,7 +388,8 @@ function Bridge.TalentApply(bot, buildString, dryRun)
     Bridge.NativeActions[t] = { type = "TALENT_APPLY", botName = bot, buildString = buildString or "", dryRun = dryRun and true or false }
     -- Current bridge TALENT_APPLY_V1 accepts bot, token, and build only;
     -- the old dry-run field causes BAD_FIELD_COUNT.
-    Bridge.Send("RUN", "TALENT_APPLY~" .. urlEncode(bot) .. "~" .. t .. "~" .. urlEncode(buildString or ""))
+    -- TALENT_APPLY_V1 uses token~bot~build (unlike ITEM_TRADE's bot~token order).
+    Bridge.Send("RUN", "TALENT_APPLY~" .. t .. "~" .. urlEncode(bot) .. "~" .. urlEncode(buildString or ""))
     return t
 end
 
