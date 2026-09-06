@@ -9,6 +9,30 @@ local SILVER_ICON = "|TInterface\\MoneyFrame\\UI-SilverIcon:12:12:0:0|t"
 local COPPER_ICON = "|TInterface\\MoneyFrame\\UI-CopperIcon:12:12:0:0|t"
 local UNKNOWN_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 
+-- WotLK character identity achievement icons. Keep the mapping explicit so each
+-- race/gender combination has a distinct roster icon instead of using Human Male
+-- for every character.
+local IDENTITY_ICONS = {
+    HUMAN = { MALE = "Interface\\Icons\\Achievement_Character_Human_Male", FEMALE = "Interface\\Icons\\Achievement_Character_Human_Female" },
+    DWARF = { MALE = "Interface\\Icons\\Achievement_Character_Dwarf_Male", FEMALE = "Interface\\Icons\\Achievement_Character_Dwarf_Female" },
+    NIGHTELF = { MALE = "Interface\\Icons\\Achievement_Character_NightElf_Male", FEMALE = "Interface\\Icons\\Achievement_Character_NightElf_Female" },
+    GNOME = { MALE = "Interface\\Icons\\Achievement_Character_Gnome_Male", FEMALE = "Interface\\Icons\\Achievement_Character_Gnome_Female" },
+    DRAENEI = { MALE = "Interface\\Icons\\Achievement_Character_Draenei_Male", FEMALE = "Interface\\Icons\\Achievement_Character_Draenei_Female" },
+    ORC = { MALE = "Interface\\Icons\\Achievement_Character_Orc_Male", FEMALE = "Interface\\Icons\\Achievement_Character_Orc_Female" },
+    UNDEAD = { MALE = "Interface\\Icons\\Achievement_Character_Undead_Male", FEMALE = "Interface\\Icons\\Achievement_Character_Undead_Female" },
+    TAUREN = { MALE = "Interface\\Icons\\Achievement_Character_Tauren_Male", FEMALE = "Interface\\Icons\\Achievement_Character_Tauren_Female" },
+    TROLL = { MALE = "Interface\\Icons\\Achievement_Character_Troll_Male", FEMALE = "Interface\\Icons\\Achievement_Character_Troll_Female" },
+    BLOODELF = { MALE = "Interface\\Icons\\Achievement_Character_BloodElf_Male", FEMALE = "Interface\\Icons\\Achievement_Character_BloodElf_Female" },
+}
+
+local function IdentityIcon(race, gender)
+    local raceKey = tostring(race or ""):upper():gsub("[%s%-]+", "")
+    local genderKey = tostring(gender or ""):upper()
+    if genderKey == "2" then genderKey = "MALE" elseif genderKey == "3" then genderKey = "FEMALE" end
+    local icons = IDENTITY_ICONS[raceKey]
+    return icons and (icons[genderKey] or icons.MALE) or UNKNOWN_ICON
+end
+
 local POWERLESS = { WARRIOR=true, ROGUE=true, DEATHKNIGHT=true }
 
 local TREE_NAMES = {
@@ -522,6 +546,7 @@ PBAM.RegisterTab("Roster", "Roster", 1, function(panel)
 
         nameFs:SetText("|cff" .. (classColor or "ffffff") .. botName .. (isPlayer and " |cffd4af37(You)|r" or ""))
         lines.identity:SetText(string.format("%s %s %s", tostring(genderName or ""), tostring(raceName or ""), tostring(className or "Unknown")))
+        lineIcons.identity:SetTexture(IdentityIcon(raceName, genderName))
         lines.level:SetText("Level: " .. tostring(level))
         lines.spec:SetText(string.format("Spec: %s   Role: %s", spec, role))
         local avgItemLevel = isPlayer and GetAverageItemLevel and math.floor((GetAverageItemLevel() or 0) + 0.5) or nil
