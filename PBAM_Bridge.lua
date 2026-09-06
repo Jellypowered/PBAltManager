@@ -767,7 +767,7 @@ function Bridge.ApplyInventoryPayload(payload)
     local key = string.lower(name)
 
     if opcode == "INV_BEGIN" or opcode == "INV_EXACT_BEGIN" then
-        Bridge.Inventory[key] = { name = name, token = token, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
+        Bridge.Inventory[key] = { name = name, token = token, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, exact = opcode == "INV_EXACT_BEGIN", loading = true }
         return
     end
 
@@ -787,19 +787,23 @@ function Bridge.ApplyInventoryPayload(payload)
         inv.bagTotal = tonumber(bagTotal) or 0
         Bridge.Inventory[key] = inv
     elseif opcode == "INV_BAG" then
-        local bagIndex, rest2 = splitOnce(rest, "~")
-        local bagItemId, rest3 = splitOnce(rest2, "~")
-        local bagLink, rest4 = splitOnce(rest3, "~")
-        local numSlots, bagType = splitOnce(rest4, "~")
         inv.bags = inv.bags or {}
-        local idx = tonumber(bagIndex) or 0
-        inv.bags[idx] = {
-            bagIndex = idx,
-            bagItemId = tonumber(bagItemId) or 0,
-            bagLink = trim(urlDecode(bagLink)),
-            numSlots = tonumber(numSlots) or 0,
-            bagType = trim(urlDecode(bagType)),
-        }
+        if inv.exact then
+            -- Exact format: kind~bag~slotStart~slotCount~bagItemId.
+            local kind, rest2 = splitOnce(rest, "~")
+            local bag, rest3 = splitOnce(rest2, "~")
+            local slotStart, rest4 = splitOnce(rest3, "~")
+            local slotCount, bagItemId = splitOnce(rest4, "~")
+            local idx = tonumber(bag) or 0
+            inv.bags[idx] = { bagIndex = idx, kind = trim(kind), slotStart = tonumber(slotStart) or 0, numSlots = tonumber(slotCount) or 0, bagItemId = tonumber(bagItemId) or 0 }
+        else
+            local bagIndex, rest2 = splitOnce(rest, "~")
+            local bagItemId, rest3 = splitOnce(rest2, "~")
+            local bagLink, rest4 = splitOnce(rest3, "~")
+            local numSlots, bagType = splitOnce(rest4, "~")
+            local idx = tonumber(bagIndex) or 0
+            inv.bags[idx] = { bagIndex = idx, bagItemId = tonumber(bagItemId) or 0, bagLink = trim(urlDecode(bagLink)), numSlots = tonumber(numSlots) or 0, bagType = trim(urlDecode(bagType)) }
+        end
         Bridge.Inventory[key] = inv
     elseif opcode == "INV_ITEM_LOC" then
         local bag, rest2 = splitOnce(rest, "~")
@@ -848,6 +852,17 @@ function Bridge.ApplyInventoryPayload(payload)
         end
         Bridge.Inventory[key] = inv
     elseif opcode == "INV_EXACT_END" or opcode == "INV_END" then
+        if inv.exact then
+            local total, used = 0, 0
+            for _, bag in pairs(inv.bags or {}) do
+                if bag.kind ~= "KEYRING" then total = total + (tonumber(bag.numSlots) or 0) end
+            end
+            for _, item in ipairs(inv.itemLocations or {}) do
+                local bag, slot = tonumber(item.bag) or 0, tonumber(item.slot) or 0
+                if (bag == 255 and slot < 86) or (bag >= 19 and bag <= 22) then used = used + 1 end
+            end
+            inv.bagTotal, inv.bagUsed = total, used
+        end
         inv.loading = false
         Bridge.Inventory[key] = inv
         Bridge._InFlightRequests["INV~" .. key] = nil

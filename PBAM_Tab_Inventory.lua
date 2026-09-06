@@ -46,6 +46,10 @@ local function ItemName(item)
     if name and name ~= "" then return name end
     local text = ItemText(item)
     if text ~= "" then return text end
+    if item and tonumber(item.itemId) and tonumber(item.itemId) > 0 and GetItemInfo then
+        local name = GetItemInfo(tonumber(item.itemId))
+        if name and name ~= "" then return name end
+    end
     return "item"
 end
 
@@ -347,7 +351,10 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             local r = Row(i)
             r.item=item; r.itemText=ItemText(item); r.merchantItem=nil
             r.icon:SetTexture(ItemIcon(item))
-            r.text:SetText(ItemText(item))
+            local label = ItemName(item)
+            local quality
+            if GetItemInfo then local _, _, itemQuality = GetItemInfo(ItemId(item)); quality = itemQuality end
+            r.text:SetText(PBAM.BuildColoredItemLabel and PBAM.BuildColoredItemLabel(label, ItemLink(item), ItemId(item), quality) or label)
         end
         UpdateRowHighlights(); content:SetHeight(20 + #displayItems * ROW_H)
         return true
