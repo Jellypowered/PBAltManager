@@ -74,16 +74,62 @@ function PBAM.LegacySendingMessage(msg)
     PBAM.ChatMessage(msg)
 end
 
-StaticPopupDialogs = StaticPopupDialogs or {}
-StaticPopupDialogs["PBAM_CONFIRM_DESTRUCTIVE"] = {
-    text = "%s",
-    button1 = YES,
-    button2 = NO,
-    timeout = 0,
-    whileDead = true,
-    hideOnEscape = true,
-    OnAccept = function(self, data) if data and data.func then data.func() end end,
-}
+local destructiveConfirmFrame
+local destructiveConfirmText
+local destructiveConfirmCallback
+
+local function CreateDestructiveConfirmFrame()
+    if destructiveConfirmFrame then return destructiveConfirmFrame end
+    local frame = CreateFrame("Frame", "PBAMPrivateConfirmFrame", UIParent)
+    frame:SetSize(360, 125)
+    frame:SetPoint("CENTER")
+    frame:SetFrameStrata("DIALOG")
+    frame:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        edgeSize = 12,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 },
+    })
+    frame:SetBackdropColor(0, 0, 0, 0.92)
+
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOP", 0, -12)
+    title:SetText("PBAltManager confirmation")
+
+    destructiveConfirmText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    destructiveConfirmText:SetPoint("TOPLEFT", 18, -43)
+    destructiveConfirmText:SetPoint("TOPRIGHT", -18, -43)
+    destructiveConfirmText:SetHeight(38)
+    destructiveConfirmText:SetJustifyH("CENTER")
+    destructiveConfirmText:SetWordWrap(true)
+
+    local yes = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    yes:SetSize(105, 24)
+    yes:SetPoint("BOTTOMLEFT", 58, 14)
+    yes:SetText(YES)
+    yes:SetScript("OnClick", function()
+        local callback = destructiveConfirmCallback
+        destructiveConfirmCallback = nil
+        frame:Hide()
+        if callback then callback() end
+    end)
+
+    local no = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    no:SetSize(105, 24)
+    no:SetPoint("BOTTOMRIGHT", -58, 14)
+    no:SetText(NO)
+    no:SetScript("OnClick", function()
+        destructiveConfirmCallback = nil
+        frame:Hide()
+    end)
+
+    frame:SetScript("OnHide", function()
+        destructiveConfirmCallback = nil
+    end)
+    frame:Hide()
+    destructiveConfirmFrame = frame
+    return frame
+end
 
 function PBAM.IsConfirmDestructiveEnabled()
     if not PBAMConfig then return true end
@@ -97,7 +143,11 @@ function PBAM.ConfirmDestructive(message, func)
         if func then func() end
         return
     end
-    StaticPopup_Show("PBAM_CONFIRM_DESTRUCTIVE", tostring(message or "Are you sure?"), nil, { func = func })
+    local frame = CreateDestructiveConfirmFrame()
+    destructiveConfirmCallback = func
+    destructiveConfirmText:SetText(tostring(message or "Are you sure?"))
+    frame:Show()
+    frame:Raise()
 end
 
 function PBAM.RegisterOptionsPanel()
