@@ -396,7 +396,8 @@ end
 function Bridge.CraftRecipeTarget(bot, skillId, spellId, targetItemId, targetBag, targetSlot, targetMode)
     local t = makeToken("crafttarget")
     Bridge.ProfessionCraftActions[t] = { botName = bot, skillId = tonumber(skillId) or 0, spellId = tonumber(spellId) or 0, itemId = tonumber(targetItemId) or 0, targetBag = tonumber(targetBag) or 0, targetSlot = tonumber(targetSlot) or 0, targetMode = targetMode or "", targeted = true }
-    Bridge.Send("RUN", "CRAFT_RECIPE_TARGET~" .. urlEncode(bot) .. "~" .. t .. "~" .. (tonumber(skillId) or 0) .. "~" .. (tonumber(spellId) or 0) .. "~" .. (tonumber(targetItemId) or 0) .. "~" .. (tonumber(targetBag) or 0) .. "~" .. (tonumber(targetSlot) or 0) .. "~" .. urlEncode(targetMode or ""))
+    -- Current CRAFT_RECIPE_TARGET_V1 order: token~bot~skill~spell~bag~slot~itemId.
+    Bridge.Send("RUN", "CRAFT_RECIPE_TARGET~" .. t .. "~" .. urlEncode(bot) .. "~" .. (tonumber(skillId) or 0) .. "~" .. (tonumber(spellId) or 0) .. "~" .. (tonumber(targetBag) or 0) .. "~" .. (tonumber(targetSlot) or 0) .. "~" .. (tonumber(targetItemId) or 0))
     return t
 end
 
@@ -834,7 +835,8 @@ function Bridge.ApplyInventoryPayload(payload)
         inv.equipmentLocations = inv.equipmentLocations or {}
         local row = {
             equipSlot = tonumber(equipSlot) or 0,
-            bag = 0,
+            -- INVENTORY_SLOT_BAG_0 is 255 in the bridge's exact-position protocol.
+            bag = 255,
             slot = tonumber(equipSlot) or 0,
             itemId = tonumber(itemId) or 0,
             count = tonumber(count) or 0,

@@ -660,7 +660,10 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
                 end
             end
             r.more:SetText(#mats > #r.matIcons and ("+" .. tostring(#mats - #r.matIcons)) or "")
-            r.btn:SetText("Craft")
+            local isDisenchant = (tonumber(rec.spellId) or 0) == 13262
+            r.btn:SetText(isDisenchant and "Disenchant" or "Craft")
+            r.allBtn:Show()
+            if isDisenchant then r.allBtn:Hide() end
             PBAM.SetButtonEnabled(r.btn, canCraft,
                 (requiresBagTarget and "Select a bot bag item with a large enough stack first.")
                 or (requiresTarget and "Select a target item first.")

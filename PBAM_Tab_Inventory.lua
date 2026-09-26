@@ -166,6 +166,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     local equipMode = false
     local useMode = false
     local destroyMode = false
+    local disenchantMode = false
     local tradeMode = false
     local sellMode = false
     local sellBatch = false
@@ -210,7 +211,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     -- at the declaration, so callbacks defined before these helpers need this.
     local titleFs, slotsFs, goldFs, content, statusFs
     local playerInventoryDropdown, playerInventoryDropdownLabel
-    local tradeCheck
+    local tradeCheck, disenchantCheck
     local ClearRows, HideTargetMenu, Row, UpdateRowHighlights, UpdateActionButtons
     local RenderMerchantRows, UpdateBagSlots, GetBagName
     local RefreshMerchantView, RequestInventoryRefresh, RequestEquipmentRefresh
@@ -1127,6 +1128,7 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
     local buyCheck = CheckButtonRight("Buy Mode", -48)
     local sellCheck = CheckButtonLeft("Sell Mode", -72)
     local useCheck = CheckButtonRight("Use Mode", -72)
+    disenchantCheck = CheckButtonLeft("Disenchant Mode", -96)
     local sellBatch = CheckButtonRight("Batch Mode", -96)
 
     local tradeTargetLabel = actionPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -1397,9 +1399,36 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             tradeMode = false; tradeCheck:SetChecked(false)
             sellMode = false; sellCheck:SetChecked(false)
             destroyMode = false; destroyCheck:SetChecked(false)
+            disenchantMode = false; disenchantCheck:SetChecked(false)
             sellBatch:SetChecked(false)
         end
         RefreshStorageOverlay()
+    end
+
+    local function GetDisenchantSkillId(botName)
+        local key = botName and string.lower(tostring(botName)) or ""
+        local skills = PBAM.Bridge.Professions and PBAM.Bridge.Professions[key]
+        for _, bucket in ipairs({ skills and skills.primary, skills and skills.secondary }) do
+            for _, skill in ipairs(bucket or {}) do
+                if string.lower(tostring(skill.name or skill.key or "")) == "enchanting" then
+                    return tonumber(skill.id or skill.skillId) or 0
+                end
+            end
+        end
+        local crafting = PBAM.Bridge.Crafting and PBAM.Bridge.Crafting[key]
+        if crafting and crafting.professions then
+            for name, data in pairs(crafting.professions) do
+                if string.lower(tostring(name)) == "enchanting" then return tonumber(data.id or data.skillId) or 0 end
+            end
+        end
+        return 0
+    end
+
+    local function GetFreeBotBagSpace(botName)
+        local key = botName and string.lower(tostring(botName)) or ""
+        local inv = PBAM.Bridge.Inventory and PBAM.Bridge.Inventory[key]
+        if not inv then return nil end
+        return math.max(0, (tonumber(inv.bagTotal) or 0) - (tonumber(inv.bagUsed) or 0))
     end
 
     local function UpdateActionButtons(botName)
@@ -1419,6 +1448,16 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             GameTooltip:Show()
         end)
         equipCheck:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+        PBAM.SetFrameEnabled(disenchantCheck, hasBot and not isPlayer)
+        disenchantCheck:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Disenchant Mode", 1, 0.82, 0.22, true)
+            GameTooltip:AddLine("Requires Enchanting and available bag space.", 0.8, 0.8, 0.8, true)
+            GameTooltip:AddLine("Click a listed bot inventory item to disenchant it.", 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end)
+        disenchantCheck:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
         PBAM.SetFrameEnabled(tradeCheck, hasBot and not isPlayer)
         tradeCheck:SetScript("OnEnter", function(self)
@@ -2174,6 +2213,27 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             return
         end
 
+        if disenchantMode then
+            local botName = PBAM.SelectedBot
+            local skillId = GetDisenchantSkillId(botName)
+            local itemId = ItemId(item)
+            local freeSpace = GetFreeBotBagSpace(botName)
+            if skillId <= 0 then
+                PBAM.Bridge.RequestBotSkills(botName)
+                LogStatus(statusFs, "This bot does not have loaded Enchanting data yet.", 1, 0.7, 0.25)
+            elseif freeSpace == nil or freeSpace < 1 then
+                LogStatus(statusFs, "Disenchant canceled: the bot has no free bag space.", 1, 0.35, 0.25)
+            elseif itemId <= 0 or item.bag == nil or item.slot == nil then
+                LogStatus(statusFs, "Disenchant canceled: this item has no exact bag position.", 1, 0.35, 0.25)
+            elseif PBAM.Bridge.CraftRecipeTarget then
+                PBAM.Bridge.CraftRecipeTarget(botName, skillId, 13262, itemId, item.bag, item.slot, "BAG")
+                LogStatus(statusFs, "Sent Disenchant for " .. ItemName(item) .. ".", 0.35, 0.9, 0.45)
+            else
+                LogStatus(statusFs, "The current bridge does not support targeted Disenchant.", 1, 0.35, 0.25)
+            end
+            return
+        end
+
         if buyMode then
             local merchantItem = row and row.merchantItem
             if not merchantItem then return end
@@ -2401,6 +2461,29 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             LogStatus(statusFs, "Equip Mode enabled. Left-click normal/main hand; right-click offhand/standard legacy equip.", 0.35, 0.9, 0.45)
         else
             LogStatus(statusFs, "Equip Mode disabled.", 0.75, 0.75, 0.75)
+        end
+        UpdateActionButtons(PBAM.SelectedBot)
+    end)
+
+    disenchantCheck:SetScript("OnClick", function(self)
+        disenchantMode = self:GetChecked() and true or false
+        if disenchantMode then
+            buyMode = false; buyCheck:SetChecked(false)
+            SetStorageMode(nil)
+            equipMode = false; equipCheck:SetChecked(false)
+            useMode = false; useCheck:SetChecked(false)
+            destroyMode = false; destroyCheck:SetChecked(false)
+            sellMode = false; sellCheck:SetChecked(false)
+            tradeMode = false; tradeCheck:SetChecked(false); HideTargetMenu()
+            local skillId = GetDisenchantSkillId(PBAM.SelectedBot)
+            if skillId <= 0 then
+                PBAM.Bridge.RequestBotSkills(PBAM.SelectedBot)
+                LogStatus(statusFs, "Disenchant requires the bot to have Enchanting. Loading skill data...", 0.95, 0.8, 0.25)
+            else
+                LogStatus(statusFs, "Disenchant Mode enabled. Select an item from the bot inventory.", 0.35, 0.9, 0.45)
+            end
+        else
+            LogStatus(statusFs, "Disenchant Mode disabled.", 0.75, 0.75, 0.75)
         end
         UpdateActionButtons(PBAM.SelectedBot)
     end)
