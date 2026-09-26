@@ -863,12 +863,30 @@ function Bridge.ApplyInventoryPayload(payload)
     elseif opcode == "INV_EXACT_END" or opcode == "INV_END" then
         if inv.exact then
             local total, used = 0, 0
+            local hasBackpack = false
             for _, bag in pairs(inv.bags or {}) do
-                if bag.kind ~= "KEYRING" then total = total + (tonumber(bag.numSlots) or 0) end
+                local kind = string.upper(trim(bag.kind or ""))
+                local slots = tonumber(bag.numSlots) or 0
+                if kind == "BACKPACK" or tonumber(bag.bagIndex) == 0 or tonumber(bag.bagIndex) == 255 then
+                    hasBackpack = true
+                    -- The exact bridge identifies the backpack by kind/position;
+                    -- always retain its physical slot count.
+                    total = math.max(total, slots > 0 and slots or 16)
+                elseif kind ~= "KEYRING" then
+                    total = total + slots
+                end
             end
+            -- Be defensive if a bridge response omits the BACKPACK topology row.
+            if not hasBackpack then total = total + 16 end
+
+            local seen = {}
             for _, item in ipairs(inv.itemLocations or {}) do
                 local bag, slot = tonumber(item.bag) or 0, tonumber(item.slot) or 0
-                if (bag == 255 and slot < 86) or (bag >= 19 and bag <= 22) then used = used + 1 end
+                local isBagItem = (bag == 255 and slot < 86) or (bag >= 19 and bag <= 22)
+                if isBagItem then
+                    local position = tostring(bag) .. ":" .. tostring(slot)
+                    if not seen[position] then seen[position] = true; used = used + 1 end
+                end
             end
             inv.bagTotal, inv.bagUsed = total, used
         end
