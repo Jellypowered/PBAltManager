@@ -869,9 +869,14 @@ function Bridge.ApplyInventoryPayload(payload)
                 -- INVENTORY_EXACT explicitly labels BACKPACK, BAG, and KEYRING.
                 -- Do not infer the backpack from its numeric bag position: the
                 -- server's raw container constants differ from UI bag indices.
-                if kind == "BACKPACK" then
+                local slotStart = tonumber(bag.slotStart) or 0
+                -- Exclude keyring topology even if an older bridge build uses a
+                -- nonstandard kind label; keyring starts at its dedicated slot range.
+                if slotStart >= 86 or kind == "KEYRING" then
+                    -- not normal bag capacity
+                elseif kind == "BACKPACK" or (kind == "" and slotStart == 0) then
                     backpackSlots = math.max(backpackSlots, slots)
-                elseif kind == "BAG" then
+                elseif kind == "BAG" or (kind == "" and slotStart > 0) then
                     bagSlots = bagSlots + slots
                 end
             end
