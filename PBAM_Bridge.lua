@@ -334,7 +334,13 @@ function Bridge.RunInventoryItemAction(bot, action, itemId, count, bag, slot)
 end
 function Bridge.LegacyCastItem(bot, spellId, itemId)
     if not bot or not spellId or not itemId or not SendChatMessage then return false end
-    local link = "|cff9d9d9d|Hitem:" .. tostring(itemId) .. ":0:0:0:0:0:0:0|h[item]|h|r"
+    local link
+    if GetItemInfo then
+        local _, itemLink = GetItemInfo(tonumber(itemId) or 0)
+        link = itemLink
+    end
+    link = link or ("|cff9d9d9d|Hitem:" .. tostring(itemId) .. ":0:0:0:0:0:0:0|h[item]|h|r")
+    PBAM.DebugPrint("Legacy item cast: /w " .. tostring(bot) .. " cast " .. tostring(spellId) .. " " .. tostring(link))
     SendChatMessage("cast " .. tostring(spellId) .. " " .. link, "WHISPER", nil, bot)
     return true
 end
