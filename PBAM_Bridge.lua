@@ -332,6 +332,13 @@ function Bridge.RunInventoryItemAction(bot, action, itemId, count, bag, slot)
     Bridge.Send("RUN", payload)
     return t
 end
+function Bridge.LegacyCastItem(bot, spellId, itemId)
+    if not bot or not spellId or not itemId or not SendChatMessage then return false end
+    local link = "|cff9d9d9d|Hitem:" .. tostring(itemId) .. ":0:0:0:0:0:0:0|h[item]|h|r"
+    SendChatMessage("cast " .. tostring(spellId) .. " " .. link, "WHISPER", nil, bot)
+    return true
+end
+
 function Bridge.CastSpell(bot, spellId, targetName)
     local t = makeToken("cast")
     Bridge.NativeActions[t] = { type = "CAST_SPELL", botName = bot, spellId = tonumber(spellId) or 0, targetName = targetName or "" }
@@ -1645,7 +1652,7 @@ function Bridge.ApplyNativeActionResult(opcode, payload)
     local reason, extra = splitOnce(rest3 or "", "~")
 
     token = trim(token)
-    local command = Bridge.NativeActions[token] or {}
+    local command = Bridge.NativeActions[token] or Bridge.ProfessionCraftActions[token] or {}
     local result = {
         type = opcode,
         botName = trim(urlDecode(name)) ~= "" and trim(urlDecode(name)) or command.botName,
@@ -1665,8 +1672,10 @@ function Bridge.ApplyNativeActionResult(opcode, payload)
     if opcode == "TALENT_APPLY" then result.summary = trim(urlDecode(extra)) end
 
     Bridge.NativeActions[token] = nil
+    Bridge.ProfessionCraftActions[token] = nil
     Bridge.FireCallback("NativeActionResult", result)
     Bridge.FireCallback(opcode .. "Result", result)
+    if opcode == "CRAFT_RECIPE_TARGET" then Bridge.FireCallback("ProfessionCraftResult", result) end
 end
 
 function Bridge.ApplyInventoryBulkPayload(payload)

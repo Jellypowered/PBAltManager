@@ -2225,8 +2225,8 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                 LogStatus(statusFs, "Disenchant canceled: the bot has no free bag space.", 1, 0.35, 0.25)
             elseif itemId <= 0 or item.bag == nil or item.slot == nil then
                 LogStatus(statusFs, "Disenchant canceled: this item has no exact bag position.", 1, 0.35, 0.25)
-            elseif PBAM.Bridge.CraftRecipeTarget then
-                PBAM.Bridge.CraftRecipeTarget(botName, skillId, 13262, itemId, item.bag, item.slot, "BAG")
+            elseif PBAM.Bridge.LegacyCastItem then
+                PBAM.Bridge.LegacyCastItem(botName, 13262, itemId)
                 LogStatus(statusFs, "Sent Disenchant for " .. ItemName(item) .. ".", 0.35, 0.9, 0.45)
             else
                 LogStatus(statusFs, "The current bridge does not support targeted Disenchant.", 1, 0.35, 0.25)

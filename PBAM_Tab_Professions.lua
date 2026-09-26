@@ -688,12 +688,16 @@ PBAM.RegisterTab("Professions", "Professions", 4, function(panel)
                 elseif targetMode == "TRADE" and PBAM.Bridge.CraftRecipeTarget then
                     PBAM.Bridge.CraftRecipeTarget(PBAM.SelectedBot, rec.skillId or selectedSkillId, rec.spellId, 0, 0, 0, "TRADE")
                     statusText:SetText("Sent trade-slot target cast for " .. tostring(RecipeName(rec)) .. ".")
-                elseif (targetMode == "BAG" or targetMode == "EQUIP") and PBAM.Bridge.CraftRecipeTarget then
+                elseif (targetMode == "BAG" or targetMode == "EQUIP") then
                     if not selectedTargetItem or not selectedTargetItem.itemId then
                         statusText:SetText("Select a target item first.")
                         return
                     end
-                    PBAM.Bridge.CraftRecipeTarget(PBAM.SelectedBot, rec.skillId or selectedSkillId, rec.spellId, selectedTargetItem.itemId, selectedTargetItem.bag or 0, selectedTargetItem.slot or 0, targetMode)
+                    if isDisenchant and PBAM.Bridge.LegacyCastItem then
+                        PBAM.Bridge.LegacyCastItem(PBAM.SelectedBot, rec.spellId, selectedTargetItem.itemId)
+                    elseif PBAM.Bridge.CraftRecipeTarget then
+                        PBAM.Bridge.CraftRecipeTarget(PBAM.SelectedBot, rec.skillId or selectedSkillId, rec.spellId, selectedTargetItem.itemId, selectedTargetItem.bag or 0, selectedTargetItem.slot or 0, targetMode)
+                    end
                     statusText:SetText("Sent targeted cast for " .. tostring(RecipeName(rec)) .. " on " .. TargetItemLabel(selectedTargetItem) .. ".")
                 elseif special and special.legacyCast then
                     if PBAM.Bridge.CastSpell then
