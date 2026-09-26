@@ -353,7 +353,12 @@ PBAM.RegisterTab("Equipment", "Equipment", 7, function(panel)
         local foundLinks = 0
         for slot,b in pairs(slotButtons) do
             local bridgeItem = bridgeEquipment[slot]
-            local link = bridgeItem and bridgeItem.text or (unit and GetInventoryItemLink(unit, slot) or nil)
+            local bridgeLink = bridgeItem and bridgeItem.text
+            -- Exact equipment packets carry an item ID, not a hyperlink. Do not
+            -- pass the empty placeholder through to GameTooltip:SetHyperlink().
+            local link = (bridgeLink and bridgeLink ~= "" and bridgeLink)
+                or (bridgeItem and bridgeItem.itemId and ("item:" .. tostring(bridgeItem.itemId)))
+                or (unit and GetInventoryItemLink(unit, slot) or nil)
             local itemId = bridgeItem and bridgeItem.itemId or nil
             if link then foundLinks = foundLinks + 1 end
             b.link = link
