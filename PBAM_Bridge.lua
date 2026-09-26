@@ -862,27 +862,26 @@ function Bridge.ApplyInventoryPayload(payload)
         Bridge.Inventory[key] = inv
     elseif opcode == "INV_EXACT_END" or opcode == "INV_END" then
         if inv.exact then
-            local total, used = 0, 0
-            local hasBackpack = false
+            local backpackSlots, bagSlots, used = 0, 0, 0
             for _, bag in pairs(inv.bags or {}) do
                 local kind = string.upper(trim(bag.kind or ""))
                 local slots = tonumber(bag.numSlots) or 0
-                if kind == "BACKPACK" or tonumber(bag.bagIndex) == 0 or tonumber(bag.bagIndex) == 255 then
-                    hasBackpack = true
-                    -- The exact bridge identifies the backpack by kind/position;
-                    -- always retain its physical slot count.
-                    total = math.max(total, slots > 0 and slots or 16)
-                elseif kind ~= "KEYRING" then
-                    total = total + slots
+                -- INVENTORY_EXACT explicitly labels BACKPACK, BAG, and KEYRING.
+                -- Do not infer the backpack from its numeric bag position: the
+                -- server's raw container constants differ from UI bag indices.
+                if kind == "BACKPACK" then
+                    backpackSlots = math.max(backpackSlots, slots)
+                elseif kind == "BAG" then
+                    bagSlots = bagSlots + slots
                 end
             end
-            -- Be defensive if a bridge response omits the BACKPACK topology row.
-            if not hasBackpack then total = total + 16 end
+            -- The backpack is always 16 slots even if its topology row is absent.
+            local total = (backpackSlots > 0 and backpackSlots or 16) + bagSlots
 
             local seen = {}
             for _, item in ipairs(inv.itemLocations or {}) do
                 local bag, slot = tonumber(item.bag) or 0, tonumber(item.slot) or 0
-                local isBagItem = (bag == 255 and slot < 86) or (bag >= 19 and bag <= 22)
+                local isBagItem = ((bag == 255 or bag == 0) and slot < 86) or (bag >= 1 and bag <= 4) or (bag >= 19 and bag <= 22)
                 if isBagItem then
                     local position = tostring(bag) .. ":" .. tostring(slot)
                     if not seen[position] then seen[position] = true; used = used + 1 end
