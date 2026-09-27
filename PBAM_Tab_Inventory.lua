@@ -2423,7 +2423,14 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             if not self.itemText or self.itemText == "" then return end
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             local link = ItemLink(self.item or self.itemText)
-            if link and tostring(link):match("|Hitem:") then GameTooltip:SetHyperlink(link) else GameTooltip:AddLine(self.itemText, 1, 1, 1) end
+            if link and tostring(link):match("|Hitem:") then
+                GameTooltip:SetHyperlink(link)
+            elseif ItemId(self.item) > 0 and GameTooltip.SetHyperlink then
+                -- Exact bridge snapshots carry item IDs but may lack client-cached links.
+                GameTooltip:SetHyperlink("item:" .. tostring(ItemId(self.item)))
+            else
+                GameTooltip:AddLine(self.itemText, 1, 1, 1)
+            end
             if buyMode and self.merchantItem and SetMerchantItem then
                 GameTooltip:ClearLines()
                 GameTooltip:SetMerchantItem(self.merchantItem.index)
@@ -2727,8 +2734,10 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
                 panel.OnBotSelect(PBAM.SelectedBot)
             else
                 local key = string.lower(PBAM.SelectedBot)
-                PBAM.Bridge.Inventory[key] = { name = PBAM.SelectedBot, items = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
-                PBAM.Bridge.RequestInventory(PBAM.SelectedBot)
+                local token = PBAM.Bridge.RequestInventory(PBAM.SelectedBot)
+                if token then
+                    PBAM.Bridge.Inventory[key] = { name = PBAM.SelectedBot, token = token, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
+                end
                 if storageMode == "bank" then
                     PBAM.Bridge.Bank[key] = nil
                     PBAM.Bridge.RequestBank(PBAM.SelectedBot)
@@ -2810,8 +2819,10 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
             return
         end
         lastTabOpenInventoryRequest = now
-        PBAM.Bridge.Inventory[key] = { name = botName, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
-        PBAM.Bridge.RequestInventory(botName)
+        local token = PBAM.Bridge.RequestInventory(botName)
+        if token then
+            PBAM.Bridge.Inventory[key] = { name = botName, token = token, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
+        end
         if storageMode == "bank" then
             PBAM.Bridge.Bank[key] = nil
             PBAM.Bridge.RequestBank(botName)
@@ -2856,9 +2867,12 @@ PBAM.RegisterTab("Inventory", "Inventory", 3, function(panel)
 
         titleFs:SetText("Inventory")
         if not inv then
-            PBAM.Bridge.Inventory[key] = { name = botName, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
-            PBAM.Bridge.RequestInventory(botName)
-            local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_PocketWatch_01"); r.text:SetText("Requesting inventory...")
+            local token = PBAM.Bridge.RequestInventory(botName)
+            if token then
+                inv = { name = botName, token = token, items = {}, itemLocations = {}, equipmentLocations = {}, bags = {}, goldCopper = 0, bagUsed = 0, bagTotal = 0, loading = true }
+                PBAM.Bridge.Inventory[key] = inv
+            end
+            local r = Row(1); r.item=nil; r.itemText=nil; r.icon:SetTexture("Interface\\Icons\\INV_Misc_PocketWatch_01"); r.text:SetText(token and "Requesting inventory..." or "Inventory request already in progress...")
             goldFs:SetText("Gold: loading..."); slotsFs:SetText(""); content:SetHeight(60)
             RefreshStorageOverlay()
             return
